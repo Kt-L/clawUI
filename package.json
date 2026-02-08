@@ -1,0 +1,69 @@
+{
+  "name": "clawui",
+  "version": "0.1.0",
+  "description": "A modern, open-source desktop frontend for OpenClaw built with React, Vite, and Electron.",
+  "author": "GPT-5.3-codex",
+  "license": "MIT",
+  "private": true,
+  "main": "electron/main.cjs",
+  "type": "module",
+  "engines": {
+    "node": "22.22.0",
+    "npm": "10.9.4"
+  },
+  "packageManager": "npm@10.9.4",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "desktop:build:web": "vite build",
+    "desktop:pack": "npm run desktop:build:web && electron-builder --dir",
+    "desktop:dist:mac": "npm run desktop:build:web && electron-builder --mac dmg zip --publish never",
+    "preview": "vite preview",
+    "check:runtime": "node scripts/check-runtime.mjs",
+    "check:rollup-linux": "node -e \"require.resolve('@rollup/rollup-linux-x64-gnu')\"",
+    "check:env": "npm run check:runtime && npm run check:rollup-linux",
+    "verify:ci": "npm ci && npm run check:env && npm run build",
+    "hooks:install": "git config core.hooksPath .githooks"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "dompurify": "^3.0.11",
+    "marked": "^12.0.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/dompurify": "^3.0.5",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.1",
+    "autoprefixer": "^10.4.20",
+    "electron": "^40.2.1",
+    "electron-builder": "^26.7.0",
+    "postcss": "^8.4.45",
+    "tailwindcss": "^3.4.10",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.8"
+  },
+  "build": {
+    "appId": "com.openclaw.para",
+    "productName": "ClawUI",
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "desktop-dist"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "identity": null
+    }
+  }
+}
