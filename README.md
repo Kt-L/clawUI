@@ -6,6 +6,8 @@
 
 ![ClawUI Preview](./UIpreview.png)
 
+![ClawUI Preview](./UIpreview2.png)
+
 ClawUI is a modern, open-source desktop interface designed for **OpenClaw**. Built with performance and user experience in mind, it leverages the power of **React**, **Vite**, and **Electron** to deliver a responsive and seamless chat interaction platform.
 
 ## Features
