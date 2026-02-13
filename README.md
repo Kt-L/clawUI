@@ -1,122 +1,101 @@
-# ClawUI
+<p align="center">
+  <h1 align="center">ClawUI</h1>
+  <p align="center">A modern, ChatGPT-style web & desktop client for <a href="https://github.com/openclaw/openclaw">OpenClaw Gateway</a>.</p>
+</p>
 
-> Experimental project. Expect rapid iteration and occasional rough edges.
+<p align="center">
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#features">Features</a> •
+  <a href="#desktop">Desktop App</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="LICENSE">License</a>
+</p>
 
 ![ClawUI Preview](./UIpreview.png)
-![ClawUI Preview](./UIpreview2.png)
 
-ClawUI is a modern Web/Desktop client for **OpenClaw Gateway**, built with React + Vite + Electron.
+## Why ClawUI?
 
-## Highlights
+OpenClaw's built-in webchat is functional but minimal. ClawUI gives you a full-featured chat interface — session management, rich rendering, tool call inspection, keyboard shortcuts, and deep UI customization — all connecting directly to your Gateway via WebSocket. No extra backend needed.
 
-- Gateway-native chat client with token/password auth and automatic reconnect.
-- Session workflow: search, create, delete, incremental loading, and history pagination.
-- Multi-agent session support, including creating new sessions bound to a selected agent.
-- Rich message rendering: Markdown, code blocks, tables, and KaTeX math.
-- Tool activity timeline with collapsible args/output details.
-- Slash command UX with autocomplete and keyboard navigation.
-- Image-first attachment pipeline with payload-size estimation and auto-compression.
-- Local/remote image resolving bridge for desktop runtime (`claw-local-image://` + fallback fetch).
-- Deep UI customization (typography, layout, colors, markdown readability, motion).
-- Settings schemes, model shortcut schemes, and agent session shortcut schemes.
-- Reply-done sound notifications (built-in tones or custom audio file).
+## Quick Start
 
-## Built-in Slash Commands
-
-ClawUI has local handling for:
-
-- `/status`
-- `/models`
-- `/compact`
-- `/model provider/model`
-- `/think off|minimal|low|medium|high|xhigh`
-- `/verbose ...`
-- `/reasoning ...`
-- `/usage ...`
-- `/abort`
-- `/new [label]`
-- `/reset`
-
-Other slash inputs are sent as normal chat text.
-
-## Keyboard Shortcuts
-
-- `Cmd/Ctrl + D`: Toggle session sidebar.
-- `Cmd/Ctrl + E`: Create a new session.
-- Up to 5 custom model shortcuts (model + thinking combo).
-- Up to 5 custom agent-session shortcuts (create new session with bound agent).
-
-All shortcut schemes are configurable in `Settings`.
-
-## Requirements
-
-- Node.js `22.22.0`
-- npm `10.9.4`
-- A running OpenClaw Gateway (default: `ws://127.0.0.1:18789`)
-
-## Quick Start (Web)
+> **Prerequisites:** Node.js ≥ 22, npm ≥ 10, a running [OpenClaw Gateway](https://docs.openclaw.ai/gateway)
 
 ```bash
+git clone https://github.com/Kt-L/clawUI.git
+cd clawUI
 npm install
 npm run dev
 ```
 
-Open the Vite URL, then set Gateway URL/token/password in `Settings`.
+Open the URL printed by Vite (default `http://localhost:5178`), go to **Settings**, and enter your Gateway URL + token/password. That's it.
 
-## Desktop Build
+## Features
 
-Build web assets:
+**Chat**
+- Streaming AI responses with live thinking animation
+- Markdown, syntax-highlighted code blocks, LaTeX math (KaTeX), and tables
+- Tool call timeline — collapsed by default, expandable for full args & output
+- File & image attachments with auto-compression and size estimation
+- Reply-done sound notifications (built-in tones or custom audio)
+
+**Sessions**
+- Create, search, switch, and delete sessions from the sidebar
+- History pagination with incremental loading
+- Multi-agent support — create sessions bound to specific agents
+
+**Slash Commands**
+- `/status` `/models` `/model` `/think` `/compact` `/abort` `/new` `/reset` and more
+- Autocomplete popup with keyboard navigation (↑↓ + Enter/Tab)
+
+**Shortcuts**
+- `Ctrl/⌘ + D` — toggle sidebar
+- `Ctrl/⌘ + E` — new session
+- Up to 5 custom model shortcuts (model + thinking level combo)
+- Up to 5 custom agent-session shortcuts
+
+**UI Customization**
+- Font family, size, line height, content width
+- Color schemes and themes
+- Settings schemes — save & switch between presets
+- All changes apply instantly, persisted in localStorage
+
+![Tool Calls & Sidebar](./UIpreview2.png)
+
+## Desktop
+
+ClawUI supports Electron packaging for a native desktop experience with local image resolution.
 
 ```bash
 npm run build
+npm run desktop:pack          # unpacked app for current OS
+npm run desktop:dist:mac      # unsigned macOS .dmg + .zip
 ```
 
-Package desktop app (unpacked):
+See [DESKTOP.md](DESKTOP.md) for details on macOS Gatekeeper and first-launch instructions.
 
-```bash
-npm run desktop:pack
-```
+## Configuration
 
-Build unsigned macOS artifacts:
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `5178` | Vite dev server port |
+| `CLAWUI_IMAGE_PROXY_PORT` | `3000` | Local image proxy port (desktop) |
+| `OPENCLAW_WORKSPACE_DIR` | auto | Override workspace path for desktop runtime |
 
-```bash
-npm run desktop:dist:mac
-```
-
-Detailed desktop notes: `DESKTOP.md`.
-
-## Useful Scripts
-
-- `npm run dev` - start Vite dev server.
-- `npm run build` - build web assets.
-- `npm run preview` - preview production build locally.
-- `npm run desktop:pack` - package Electron app (unpacked).
-- `npm run desktop:dist:mac` - package unsigned macOS app.
-- `npm run check:runtime` - validate Node/npm runtime versions.
-- `npm run check:env` - runtime checks + Rollup Linux binary check.
-- `npm run verify:ci` - CI-style local verification.
-
-## Environment Variables (Optional)
-
-- `PORT`: Vite dev server port (default `5178`).
-- `CLAWUI_IMAGE_PROXY_PORT`: local-image proxy port used by desktop fallback fetch (default `3000`).
-- `OPENCLAW_WORKSPACE_DIR` or `CLAW_WORKSPACE_DIR`: override workspace path exposed to desktop runtime.
-
-## Image Handling Notes
-
-- Web runtime cannot directly read local file paths.
-- Desktop runtime can resolve local images through Electron IPC and `claw-local-image://`.
-- For remote gateway paths, ClawUI attempts gateway-compatible read methods and HTTP proxy fallback.
-- Large image payloads are auto-compressed before `chat.send`; oversized payloads are rejected with a clear UI error.
+Gateway connection settings (URL, token, password) are configured in the UI under **Settings**.
 
 ## Project Structure
 
-- `src/` - React app, components, and client logic.
-- `src/lib/` - Gateway client, parsing, markdown renderer, UI settings, utilities.
-- `electron/` - desktop main/preload bridge and local image protocol handling.
-- `scripts/` - runtime and environment checks.
-- `dist/` - built web assets.
-- `desktop-dist/` - packaged desktop artifacts.
+```
+src/           React app, components, and client logic
+src/lib/       Gateway client, markdown renderer, UI settings, utilities
+electron/      Desktop main/preload bridge, local image protocol
+scripts/       Runtime and environment checks
+```
+
+## Contributing
+
+Issues and PRs welcome. This is an early-stage project — expect rapid iteration.
 
 ## License
 
