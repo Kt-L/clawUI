@@ -18,6 +18,45 @@ type SettingsModalProps = {
   onSaveUiSettingsScheme: (name: string) => void;
   onOverwriteUiSettingsScheme: (schemeId: string) => void;
   onDeleteUiSettingsScheme: (schemeId: string) => void;
+  modelShortcutSchemes: Array<{
+    slot: number;
+    combo: {
+      meta: boolean;
+      ctrl: boolean;
+      alt: boolean;
+      shift: boolean;
+      key: string;
+    };
+    shortcutLabel: string;
+    scheme: {
+      slot: number;
+      combo: {
+        meta: boolean;
+        ctrl: boolean;
+        alt: boolean;
+        shift: boolean;
+        key: string;
+      };
+      model: string;
+      thinkingLevel: string;
+      updatedAt: number;
+    } | null;
+  }>;
+  currentModelForShortcut: string;
+  currentThinkingForShortcut: string;
+  onSaveModelShortcutScheme: (slot: number) => void;
+  onApplyModelShortcutScheme: (slot: number) => void;
+  onChangeModelShortcutSchemeCombo: (
+    slot: number,
+    combo: {
+      meta: boolean;
+      ctrl: boolean;
+      alt: boolean;
+      shift: boolean;
+      key: string;
+    },
+  ) => void;
+  onDeleteModelShortcutScheme: (slot: number) => void;
   onPreviewReplyDoneSound: (next: {
     enabled: boolean;
     volume: number;
@@ -25,6 +64,45 @@ type SettingsModalProps = {
     source: UiSettings["playReplyDoneSoundSource"];
     customAudioDataUrl: UiSettings["playReplyDoneSoundCustomAudioDataUrl"];
   }) => void;
+  agentSessionShortcutSchemes: Array<{
+    slot: number;
+    combo: {
+      meta: boolean;
+      ctrl: boolean;
+      alt: boolean;
+      shift: boolean;
+      key: string;
+    };
+    shortcutLabel: string;
+    scheme: {
+      slot: number;
+      combo: {
+        meta: boolean;
+        ctrl: boolean;
+        alt: boolean;
+        shift: boolean;
+        key: string;
+      };
+      agentId: string;
+      agentLabel: string;
+      updatedAt: number;
+    } | null;
+  }>;
+  currentAgentIdForShortcut: string;
+  currentAgentLabelForShortcut: string;
+  onSaveAgentSessionShortcutScheme: (slot: number) => void;
+  onApplyAgentSessionShortcutScheme: (slot: number) => void;
+  onChangeAgentSessionShortcutSchemeCombo: (
+    slot: number,
+    combo: {
+      meta: boolean;
+      ctrl: boolean;
+      alt: boolean;
+      shift: boolean;
+      key: string;
+    },
+  ) => void;
+  onDeleteAgentSessionShortcutScheme: (slot: number) => void;
 };
 
 type NumberFieldProps = {
@@ -97,6 +175,44 @@ function formatBytes(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatThinkingLabel(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return "Off";
+  }
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function formatShortcutUpdatedAt(timestamp: number): string {
+  try {
+    return new Date(timestamp).toLocaleString();
+  } catch {
+    return "recently";
+  }
+}
+
+function normalizeShortcutKeyInput(value: string): string | null {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return null;
+  }
+  const key = normalized.slice(-1);
+  return /^[a-z0-9]$/.test(key) ? key : null;
+}
+
+function normalizeShortcutEventKey(code: string, key: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3).toLowerCase();
+  }
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+  if (/^Numpad[0-9]$/.test(code)) {
+    return code.slice(6);
+  }
+  return normalizeShortcutKeyInput(key);
 }
 
 const COLOR_SYSTEM_DEFAULTS: Partial<UiSettings> = {
@@ -284,6 +400,7 @@ export default function SettingsModal(props: SettingsModalProps) {
 
   const canOverwriteOrDeleteScheme = props.activeUiSettingsSchemeId !== BUILTIN_UI_SETTINGS_SCHEME_ID;
   const canSaveScheme = schemeNameDraft.trim().length > 0;
+  const canSaveModelShortcutScheme = props.currentModelForShortcut.trim().length > 0;
 
   const handleSaveScheme = () => {
     const nextName = schemeNameDraft.trim();
@@ -387,6 +504,288 @@ export default function SettingsModal(props: SettingsModalProps) {
                   >
                     Delete Selected
                   </button>
+                </div>
+              </div>
+            </section>
+
+            <section className="setting-card setting-card-wide">
+              <div className="setting-head">
+                <h3 className="setting-title">Model Shortcut Schemes</h3>
+              </div>
+              <div className="setting-fields">
+                <div className="field-block">
+                  <span className="field-label">Current model + thinking combination</span>
+                  <span className="field-label shortcut-current-line">
+                    {canSaveModelShortcutScheme
+                      ? `${props.currentModelForShortcut} · thinking ${formatThinkingLabel(props.currentThinkingForShortcut)}`
+                      : "No active model found in current session yet."}
+                  </span>
+                  <span className="field-label">
+                    Keep up to 5 schemes. Each scheme supports Cmd/Control/Option/Shift + letter or
+                    number.
+                  </span>
+                </div>
+                <div className="shortcut-scheme-list">
+                  {props.modelShortcutSchemes.map((entry) => {
+                    const scheme = entry.scheme;
+                    const combo = entry.combo;
+                    const updateCombo = (patch: Partial<typeof combo>) => {
+                      props.onChangeModelShortcutSchemeCombo(entry.slot, { ...combo, ...patch });
+                    };
+                    return (
+                      <div key={entry.slot} className="shortcut-scheme-row">
+                        <div className="shortcut-scheme-summary">
+                          <div className="shortcut-scheme-top">
+                            <span className="shortcut-scheme-key">{entry.shortcutLabel}</span>
+                            <label className="field-inline shortcut-key-config">
+                              <span className="field-label">Key</span>
+                              <input
+                                value={combo.key.toUpperCase()}
+                                onChange={(e) => {
+                                  const normalized = normalizeShortcutKeyInput(e.target.value);
+                                  if (normalized) {
+                                    updateCombo({ key: normalized });
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  const normalized = normalizeShortcutEventKey(e.code, e.key);
+                                  if (!normalized) {
+                                    return;
+                                  }
+                                  e.preventDefault();
+                                  updateCombo({ key: normalized });
+                                }}
+                                className="ui-input compact shortcut-key-capture"
+                                disabled={!scheme}
+                                maxLength={1}
+                                spellCheck={false}
+                                autoComplete="off"
+                                autoCapitalize="off"
+                                title="Focus and press a letter or number key"
+                                aria-label={`Shortcut key for slot ${entry.slot}`}
+                              />
+                            </label>
+                          </div>
+                          <div className="shortcut-combo-editor">
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.meta}
+                                onChange={(e) => updateCombo({ meta: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Cmd
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.ctrl}
+                                onChange={(e) => updateCombo({ ctrl: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Control
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.alt}
+                                onChange={(e) => updateCombo({ alt: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Option
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.shift}
+                                onChange={(e) => updateCombo({ shift: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Shift
+                            </label>
+                          </div>
+                          {scheme ? (
+                            <div className="shortcut-scheme-copy">
+                              <span className="shortcut-scheme-model">{scheme.model}</span>
+                              <span className="field-label">
+                                Thinking: {formatThinkingLabel(scheme.thinkingLevel)} · Saved{" "}
+                                {formatShortcutUpdatedAt(scheme.updatedAt)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="field-label">No scheme saved for this slot.</span>
+                          )}
+                        </div>
+                        <div className="scheme-actions shortcut-scheme-actions">
+                          <button
+                            type="button"
+                            onClick={() => props.onSaveModelShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-primary"
+                            disabled={!canSaveModelShortcutScheme}
+                          >
+                            Save Current
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => props.onApplyModelShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-light"
+                            disabled={!scheme}
+                          >
+                            Apply
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => props.onDeleteModelShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-light"
+                            disabled={!scheme}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </section>
+
+            <section className="setting-card setting-card-wide">
+              <div className="setting-head">
+                <h3 className="setting-title">Agent Session Shortcuts</h3>
+              </div>
+              <div className="setting-fields">
+                <div className="field-block">
+                  <span className="field-label">Current agent</span>
+                  <span className="field-label shortcut-current-line">
+                    {props.currentAgentIdForShortcut
+                      ? `${props.currentAgentLabelForShortcut} (${props.currentAgentIdForShortcut})`
+                      : "No active agent found in current session yet."}
+                  </span>
+                  <span className="field-label">
+                    Keep up to 5 shortcuts. Each shortcut creates a new session with the bound agent.
+                    Supports Cmd/Control/Option/Shift + letter or number.
+                  </span>
+                </div>
+                <div className="shortcut-scheme-list">
+                  {props.agentSessionShortcutSchemes.map((entry) => {
+                    const scheme = entry.scheme;
+                    const combo = entry.combo;
+                    const updateCombo = (patch: Partial<typeof combo>) => {
+                      props.onChangeAgentSessionShortcutSchemeCombo(entry.slot, { ...combo, ...patch });
+                    };
+                    return (
+                      <div key={entry.slot} className="shortcut-scheme-row">
+                        <div className="shortcut-scheme-summary">
+                          <div className="shortcut-scheme-top">
+                            <span className="shortcut-scheme-key">{entry.shortcutLabel}</span>
+                            <label className="field-inline shortcut-key-config">
+                              <span className="field-label">Key</span>
+                              <input
+                                value={combo.key.toUpperCase()}
+                                onChange={(e) => {
+                                  const normalized = normalizeShortcutKeyInput(e.target.value);
+                                  if (normalized) {
+                                    updateCombo({ key: normalized });
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  const normalized = normalizeShortcutEventKey(e.code, e.key);
+                                  if (!normalized) {
+                                    return;
+                                  }
+                                  e.preventDefault();
+                                  updateCombo({ key: normalized });
+                                }}
+                                className="ui-input compact shortcut-key-capture"
+                                disabled={!scheme}
+                                maxLength={1}
+                                spellCheck={false}
+                                autoComplete="off"
+                                autoCapitalize="off"
+                                title="Focus and press a letter or number key"
+                                aria-label={`Agent shortcut key for slot ${entry.slot}`}
+                              />
+                            </label>
+                          </div>
+                          <div className="shortcut-combo-editor">
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.meta}
+                                onChange={(e) => updateCombo({ meta: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Cmd
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.ctrl}
+                                onChange={(e) => updateCombo({ ctrl: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Control
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.alt}
+                                onChange={(e) => updateCombo({ alt: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Option
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.shift}
+                                onChange={(e) => updateCombo({ shift: e.target.checked })}
+                                disabled={!scheme}
+                              />
+                              Shift
+                            </label>
+                          </div>
+                          {scheme ? (
+                            <div className="shortcut-scheme-copy">
+                              <span className="shortcut-scheme-model">{scheme.agentLabel}</span>
+                              <span className="field-label">
+                                Agent: {scheme.agentId} · Saved{" "}
+                                {formatShortcutUpdatedAt(scheme.updatedAt)}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="field-label">No agent shortcut saved for this slot.</span>
+                          )}
+                        </div>
+                        <div className="scheme-actions shortcut-scheme-actions">
+                          <button
+                            type="button"
+                            onClick={() => props.onSaveAgentSessionShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-primary"
+                            disabled={!props.currentAgentIdForShortcut}
+                          >
+                            Save Current
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => props.onApplyAgentSessionShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-light"
+                            disabled={!scheme}
+                          >
+                            Create Session
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => props.onDeleteAgentSessionShortcutScheme(entry.slot)}
+                            className="ui-btn ui-btn-light"
+                            disabled={!scheme}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </section>

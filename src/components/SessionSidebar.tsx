@@ -7,6 +7,7 @@ export type SessionSidebarProps = {
   selectedKey: string | null;
   collapsed: boolean;
   sidebarWidth: number;
+  deletingKey?: string | null;
   onToggleCollapse: () => void;
   onSelect: (key: string) => void;
   onCreate: () => void;
@@ -105,6 +106,8 @@ export default function SessionSidebar(props: SessionSidebarProps) {
         )}
         {filtered.map((session) => {
           const isActive = props.selectedKey === session.key;
+          const isDeleting = props.deletingKey === session.key;
+          const hasPendingDelete = Boolean(props.deletingKey);
           const title = session.label ?? session.derivedTitle ?? session.key;
           const preview = session.lastMessagePreview ?? "";
           return (
@@ -147,10 +150,11 @@ export default function SessionSidebar(props: SessionSidebarProps) {
                     type="button"
                     onClick={(event) => props.onDelete(session.key, { skipConfirm: event.metaKey })}
                     className="session-delete"
-                    title="Delete session"
+                    disabled={hasPendingDelete}
+                    title={isDeleting ? "Deleting session..." : "Delete session"}
                     aria-label={`Delete session ${title}`}
                   >
-                    -
+                    {isDeleting ? "..." : "-"}
                   </button>
                 )}
               </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatView from "./components/ChatView.tsx";
 import SessionSidebar from "./components/SessionSidebar.tsx";
 import SettingsModal from "./components/SettingsModal.tsx";
@@ -31,6 +31,8 @@ const STORAGE_KEYS = {
   uiSettings: "clawui.ui.settings",
   uiSettingsSchemes: "clawui.ui.settings.schemes",
   activeUiSettingsScheme: "clawui.ui.settings.activeScheme",
+  modelShortcutSchemes: "clawui.model.shortcuts",
+  agentSessionShortcutSchemes: "clawui.agent.session.shortcuts",
   lastSession: "clawui.session.last",
 };
 
@@ -44,7 +46,67 @@ const DEFAULT_MAX_WS_PAYLOAD_BYTES = 512 * 1024;
 const WS_PAYLOAD_SAFETY_BYTES = 8 * 1024;
 const MIN_IMAGE_ATTACHMENT_BYTES = 48 * 1024;
 const BUILTIN_UI_SETTINGS_SCHEME_ID = "default";
+const MODEL_SHORTCUT_SLOT_MIN = 1;
+const MODEL_SHORTCUT_SLOT_MAX = 5;
+const MODEL_SHORTCUT_KEY_OPTIONS = [
+  "1",
+  "2",
+  "3",
+  "4",
+  "5",
+  "6",
+  "7",
+  "8",
+  "9",
+  "0",
+  "a",
+  "b",
+  "c",
+  "d",
+  "e",
+  "f",
+  "g",
+  "h",
+  "i",
+  "j",
+  "k",
+  "l",
+  "m",
+  "n",
+  "o",
+  "p",
+  "q",
+  "r",
+  "s",
+  "t",
+  "u",
+  "v",
+  "w",
+  "x",
+  "y",
+  "z",
+] as const;
 const MAX_REPLY_DONE_CUSTOM_AUDIO_DATA_URL_CHARS = 900_000;
+const MEDIA_PREFIX_RE = /\bmedia\s*:/i;
+const ATTACHMENT_FINGERPRINT_HEAD = 96;
+const ATTACHMENT_FINGERPRINT_TAIL = 64;
+const WORKSPACE_MARKER = "/.openclaw/workspace";
+const DESKTOP_LOCAL_IMAGE_SCHEME = "claw-local-image";
+const REMOTE_IMAGE_CACHE_LIMIT = 5;
+const DEFAULT_REMOTE_IMAGE_READ_METHODS = [
+  "workspace.read",
+  "workspace.file.read",
+  "files.read",
+  "file.read",
+  "fs.read",
+  "image.read",
+  "images.read",
+  "media.read",
+];
+const runtimePathHints: { homeDir: string; workspaceDir: string } = {
+  homeDir: "",
+  workspaceDir: "",
+};
 
 type UiSettingsScheme = {
   id: string;
@@ -52,6 +114,172 @@ type UiSettingsScheme = {
   settings: UiSettings;
   updatedAt: number;
 };
+
+type AgentChoice = {
+  id: string;
+  label: string;
+};
+
+type ShortcutCombo = {
+  meta: boolean;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  key: string;
+};
+
+type ModelShortcutScheme = {
+  slot: number;
+  combo: ShortcutCombo;
+  model: string;
+  thinkingLevel: string;
+  updatedAt: number;
+};
+
+type ModelShortcutSchemeMap = Partial<Record<string, ModelShortcutScheme>>;
+
+type AgentSessionShortcutScheme = {
+  slot: number;
+  combo: ShortcutCombo;
+  agentId: string;
+  agentLabel: string;
+  updatedAt: number;
+};
+
+type AgentSessionShortcutSchemeMap = Partial<Record<string, AgentSessionShortcutScheme>>;
+
+const AGENT_SESSION_SHORTCUT_SLOT_MIN = 1;
+const AGENT_SESSION_SHORTCUT_SLOT_MAX = 5;
+
+function getDefaultAgentSessionShortcutCombo(slot: number): ShortcutCombo {
+  const normalizedSlot = Math.max(
+    AGENT_SESSION_SHORTCUT_SLOT_MIN,
+    Math.min(AGENT_SESSION_SHORTCUT_SLOT_MAX, slot),
+  );
+  return {
+    meta: true,
+    ctrl: false,
+    alt: false,
+    shift: true,
+    key: String(normalizedSlot),
+  };
+}
+
+function getDefaultAgentSessionShortcutKey(slot: number): string {
+  const keys = ["q", "w", "e", "r", "t"];
+  const normalizedSlot = Math.max(
+    AGENT_SESSION_SHORTCUT_SLOT_MIN,
+    Math.min(AGENT_SESSION_SHORTCUT_SLOT_MAX, slot),
+  );
+  return keys[normalizedSlot - 1] ?? "q";
+}
+
+function normalizeAgentSessionShortcutSlot(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return null;
+  }
+  if (value < AGENT_SESSION_SHORTCUT_SLOT_MIN || value > AGENT_SESSION_SHORTCUT_SLOT_MAX) {
+    return null;
+  }
+  return value;
+}
+
+function parseAgentSessionShortcutScheme(value: unknown): AgentSessionShortcutScheme | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const slot = normalizeAgentSessionShortcutSlot(row.slot);
+  if (slot === null) {
+    return null;
+  }
+  const agentId = typeof row.agentId === "string" ? row.agentId.trim() : "";
+  if (!agentId) {
+    return null;
+  }
+  const combo =
+    normalizeShortcutCombo(row.combo) ??
+    getDefaultAgentSessionShortcutCombo(slot);
+  const agentLabel = typeof row.agentLabel === "string" ? row.agentLabel.trim() : agentId;
+  const updatedAt =
+    typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt) ? row.updatedAt : Date.now();
+  return {
+    slot,
+    combo,
+    agentId,
+    agentLabel,
+    updatedAt,
+  };
+}
+
+function normalizeAgentSessionShortcutSchemes(
+  map: AgentSessionShortcutSchemeMap,
+): AgentSessionShortcutSchemeMap {
+  const sorted = Object.values(map)
+    .filter((item): item is AgentSessionShortcutScheme => Boolean(item))
+    .sort((a, b) => a.slot - b.slot);
+  const usedSignatures = new Set<string>();
+  const next: AgentSessionShortcutSchemeMap = {};
+  for (const item of sorted) {
+    const normalizedCombo =
+      normalizeShortcutCombo(item.combo) ?? getDefaultAgentSessionShortcutCombo(item.slot);
+    const signature = shortcutComboSignature(normalizedCombo);
+    const combo = usedSignatures.has(signature)
+      ? {
+          ...getDefaultAgentSessionShortcutCombo(item.slot),
+          key: getDefaultAgentSessionShortcutKey(item.slot),
+        }
+      : normalizedCombo;
+    usedSignatures.add(shortcutComboSignature(combo));
+    next[String(item.slot)] = {
+      ...item,
+      combo,
+    };
+  }
+  return next;
+}
+
+function loadAgentSessionShortcutSchemes(): AgentSessionShortcutSchemeMap {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.agentSessionShortcutSchemes);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    const next: AgentSessionShortcutSchemeMap = {};
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        const normalized = parseAgentSessionShortcutScheme(item);
+        if (!normalized) {
+          continue;
+        }
+        next[String(normalized.slot)] = normalized;
+      }
+      return normalizeAgentSessionShortcutSchemes(next);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    for (const value of Object.values(parsed as Record<string, unknown>)) {
+      const normalized = parseAgentSessionShortcutScheme(value);
+      if (!normalized) {
+        continue;
+      }
+      next[String(normalized.slot)] = normalized;
+    }
+    return normalizeAgentSessionShortcutSchemes(next);
+  } catch {
+    return {};
+  }
+}
+
+function saveAgentSessionShortcutSchemes(schemes: AgentSessionShortcutSchemeMap) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.agentSessionShortcutSchemes, JSON.stringify(schemes));
+  } catch {
+    // ignore
+  }
+}
 
 function getDefaultGatewayUrl(): string {
   if (typeof window === "undefined") {
@@ -409,6 +637,259 @@ function saveUiSettingsSchemes(schemes: UiSettingsScheme[]) {
   }
 }
 
+function normalizeShortcutSlot(value: unknown): number | null {
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    return null;
+  }
+  if (value < MODEL_SHORTCUT_SLOT_MIN || value > MODEL_SHORTCUT_SLOT_MAX) {
+    return null;
+  }
+  return value;
+}
+
+function normalizeShortcutKey(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!/^[a-z0-9]$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+function getDefaultShortcutCombo(slot: number): ShortcutCombo {
+  const normalizedSlot = Math.max(MODEL_SHORTCUT_SLOT_MIN, Math.min(MODEL_SHORTCUT_SLOT_MAX, slot));
+  return {
+    meta: true,
+    ctrl: false,
+    alt: false,
+    shift: false,
+    key: String(normalizedSlot),
+  };
+}
+
+function normalizeShortcutCombo(value: unknown): ShortcutCombo | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const key = normalizeShortcutKey(row.key);
+  if (!key) {
+    return null;
+  }
+  return {
+    meta: row.meta === true,
+    ctrl: row.ctrl === true,
+    alt: row.alt === true,
+    shift: row.shift === true,
+    key,
+  };
+}
+
+function shortcutComboSignature(combo: ShortcutCombo): string {
+  return [
+    combo.meta ? "1" : "0",
+    combo.ctrl ? "1" : "0",
+    combo.alt ? "1" : "0",
+    combo.shift ? "1" : "0",
+    combo.key,
+  ].join(":");
+}
+
+function findUnusedShortcutCombo(usedSignatures: Set<string>, preferredSlot: number): ShortcutCombo {
+  const preferred = getDefaultShortcutCombo(preferredSlot);
+  if (!usedSignatures.has(shortcutComboSignature(preferred))) {
+    return preferred;
+  }
+  for (const key of MODEL_SHORTCUT_KEY_OPTIONS) {
+    const candidate: ShortcutCombo = {
+      meta: true,
+      ctrl: false,
+      alt: false,
+      shift: false,
+      key,
+    };
+    if (!usedSignatures.has(shortcutComboSignature(candidate))) {
+      return candidate;
+    }
+  }
+  return preferred;
+}
+
+function parseLegacyShortcutCombo(row: Record<string, unknown>, slot: number): ShortcutCombo | null {
+  const shortcutKeyString = normalizeShortcutKey(
+    typeof row.shortcutKey === "string" ? row.shortcutKey : "",
+  );
+  if (shortcutKeyString) {
+    return {
+      ...getDefaultShortcutCombo(slot),
+      key: shortcutKeyString,
+    };
+  }
+  const shortcutKeyNumber =
+    typeof row.shortcutKey === "number" && Number.isInteger(row.shortcutKey) ? row.shortcutKey : null;
+  if (shortcutKeyNumber !== null && shortcutKeyNumber >= 0 && shortcutKeyNumber <= 9) {
+    return {
+      ...getDefaultShortcutCombo(slot),
+      key: String(shortcutKeyNumber),
+    };
+  }
+  const functionKeyRaw = typeof row.functionKey === "string" ? row.functionKey.trim().toUpperCase() : "";
+  const functionKeyMatch = /^F(\d{1,2})$/.exec(functionKeyRaw);
+  if (functionKeyMatch) {
+    const functionIndex = Number(functionKeyMatch[1]);
+    const mappedDigit = functionIndex === 10 ? "0" : functionIndex >= 1 && functionIndex <= 9 ? String(functionIndex) : null;
+    if (mappedDigit) {
+      return {
+        ...getDefaultShortcutCombo(slot),
+        key: mappedDigit,
+      };
+    }
+  }
+  return null;
+}
+
+function parseModelShortcutScheme(value: unknown): ModelShortcutScheme | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const row = value as Record<string, unknown>;
+  const slot = normalizeShortcutSlot(row.slot);
+  if (slot === null) {
+    return null;
+  }
+  const model = typeof row.model === "string" ? row.model.trim() : "";
+  if (!model) {
+    return null;
+  }
+  const combo =
+    normalizeShortcutCombo(row.combo) ??
+    normalizeShortcutCombo(row) ??
+    parseLegacyShortcutCombo(row, slot) ??
+    getDefaultShortcutCombo(slot);
+  const thinkingLevel = normalizeThinkingValue(
+    typeof row.thinkingLevel === "string" ? row.thinkingLevel : null,
+  );
+  const updatedAt =
+    typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt) ? row.updatedAt : Date.now();
+  return {
+    slot,
+    combo,
+    model,
+    thinkingLevel,
+    updatedAt,
+  };
+}
+
+function normalizeModelShortcutSchemes(map: ModelShortcutSchemeMap): ModelShortcutSchemeMap {
+  const sorted = Object.values(map)
+    .filter((item): item is ModelShortcutScheme => Boolean(item))
+    .sort((a, b) => a.slot - b.slot);
+  const usedSignatures = new Set<string>();
+  const next: ModelShortcutSchemeMap = {};
+  for (const item of sorted) {
+    const normalizedCombo = normalizeShortcutCombo(item.combo) ?? getDefaultShortcutCombo(item.slot);
+    const signature = shortcutComboSignature(normalizedCombo);
+    const combo = usedSignatures.has(signature)
+      ? findUnusedShortcutCombo(usedSignatures, item.slot)
+      : normalizedCombo;
+    usedSignatures.add(shortcutComboSignature(combo));
+    next[String(item.slot)] = {
+      ...item,
+      combo,
+    };
+  }
+  return next;
+}
+
+function loadModelShortcutSchemes(): ModelShortcutSchemeMap {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.modelShortcutSchemes);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    const next: ModelShortcutSchemeMap = {};
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        const normalized = parseModelShortcutScheme(item);
+        if (!normalized) {
+          continue;
+        }
+        next[String(normalized.slot)] = normalized;
+      }
+      return normalizeModelShortcutSchemes(next);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+    for (const value of Object.values(parsed as Record<string, unknown>)) {
+      const normalized = parseModelShortcutScheme(value);
+      if (!normalized) {
+        continue;
+      }
+      next[String(normalized.slot)] = normalized;
+    }
+    return normalizeModelShortcutSchemes(next);
+  } catch {
+    return {};
+  }
+}
+
+function saveModelShortcutSchemes(schemes: ModelShortcutSchemeMap) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.modelShortcutSchemes, JSON.stringify(schemes));
+  } catch {
+    // ignore
+  }
+}
+
+function shortcutKeyFromKeyboardEvent(event: KeyboardEvent): string | null {
+  const code = event.code.trim();
+  if (/^Key[A-Z]$/.test(code)) {
+    return code.slice(3).toLowerCase();
+  }
+  if (/^Digit[0-9]$/.test(code)) {
+    return code.slice(5);
+  }
+  if (/^Numpad[0-9]$/.test(code)) {
+    return code.slice(6);
+  }
+  return normalizeShortcutKey(event.key);
+}
+
+function isShortcutComboEventMatch(combo: ShortcutCombo, event: KeyboardEvent): boolean {
+  const key = shortcutKeyFromKeyboardEvent(event);
+  if (!key || key !== combo.key) {
+    return false;
+  }
+  return (
+    event.metaKey === combo.meta &&
+    event.ctrlKey === combo.ctrl &&
+    event.altKey === combo.alt &&
+    event.shiftKey === combo.shift
+  );
+}
+
+function resolveShortcutLabel(combo: ShortcutCombo): string {
+  const parts: string[] = [];
+  if (combo.meta) {
+    parts.push("Cmd");
+  }
+  if (combo.ctrl) {
+    parts.push("Control");
+  }
+  if (combo.alt) {
+    parts.push("Option");
+  }
+  if (combo.shift) {
+    parts.push("Shift");
+  }
+  parts.push(combo.key.toUpperCase());
+  return parts.join("+");
+}
+
 type OutgoingGatewayAttachment = {
   type: "image" | "file";
   mimeType: string;
@@ -589,6 +1070,158 @@ function getNumber(source: Record<string, unknown>, keys: string[]): number | nu
   return null;
 }
 
+function toFiniteNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value !== "string") {
+    return null;
+  }
+  const normalized = value.trim().replace(/,/g, "");
+  if (!normalized) {
+    return null;
+  }
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getNumberLike(source: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const parsed = toFiniteNumber(source[key]);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  return null;
+}
+
+type SessionTokenStats = {
+  contextTokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+function extractSessionTokenStatsFromMessage(message: unknown): Partial<SessionTokenStats> | null {
+  if (!isRecord(message)) {
+    return null;
+  }
+  const readRecord = (path: string[]): Record<string, unknown> | null => {
+    const value = getNested(message, path);
+    return isRecord(value) ? value : null;
+  };
+  const usageRecord = isRecord(message.usage) ? message.usage : null;
+  const tokenUsageRecord = isRecord(message.tokenUsage) ? message.tokenUsage : null;
+  const responseUsageRecord = isRecord(message.responseUsage) ? message.responseUsage : null;
+  const statsRecord = isRecord(message.stats) ? message.stats : null;
+  const dataRecord = isRecord(message.data) ? message.data : null;
+  const payloadRecord = isRecord(message.payload) ? message.payload : null;
+  const resultRecord = isRecord(message.result) ? message.result : null;
+  const dataUsageRecord = readRecord(["data", "usage"]);
+  const dataTokenUsageRecord = readRecord(["data", "tokenUsage"]);
+  const dataResponseUsageRecord = readRecord(["data", "responseUsage"]);
+  const dataStatsRecord = readRecord(["data", "stats"]);
+  const payloadUsageRecord = readRecord(["payload", "usage"]);
+  const payloadTokenUsageRecord = readRecord(["payload", "tokenUsage"]);
+  const payloadResponseUsageRecord = readRecord(["payload", "responseUsage"]);
+  const payloadStatsRecord = readRecord(["payload", "stats"]);
+  const resultUsageRecord = readRecord(["result", "usage"]);
+  const resultTokenUsageRecord = readRecord(["result", "tokenUsage"]);
+  const resultResponseUsageRecord = readRecord(["result", "responseUsage"]);
+  const resultStatsRecord = readRecord(["result", "stats"]);
+  const metadataUsage = getNested(message, ["metadata", "usage"]);
+  const metadataUsageRecord = isRecord(metadataUsage) ? metadataUsage : null;
+  const metaUsage = getNested(message, ["meta", "usage"]);
+  const metaUsageRecord = isRecord(metaUsage) ? metaUsage : null;
+  const sources = [
+    message,
+    dataRecord,
+    payloadRecord,
+    resultRecord,
+    usageRecord,
+    tokenUsageRecord,
+    responseUsageRecord,
+    statsRecord,
+    dataUsageRecord,
+    dataTokenUsageRecord,
+    dataResponseUsageRecord,
+    dataStatsRecord,
+    payloadUsageRecord,
+    payloadTokenUsageRecord,
+    payloadResponseUsageRecord,
+    payloadStatsRecord,
+    resultUsageRecord,
+    resultTokenUsageRecord,
+    resultResponseUsageRecord,
+    resultStatsRecord,
+    metadataUsageRecord,
+    metaUsageRecord,
+  ].filter((item): item is Record<string, unknown> => Boolean(item));
+  const read = (keys: string[]): number | null => {
+    for (const source of sources) {
+      const value = getNumberLike(source, keys);
+      if (value !== null) {
+        return value;
+      }
+    }
+    return null;
+  };
+
+  const inputTokens = read([
+    "inputTokens",
+    "input_tokens",
+    "promptTokens",
+    "prompt_tokens",
+    "promptTokenCount",
+    "requestTokens",
+    "request_tokens",
+  ]);
+  const outputTokens = read([
+    "outputTokens",
+    "output_tokens",
+    "completionTokens",
+    "completion_tokens",
+    "completionTokenCount",
+    "responseTokens",
+    "response_tokens",
+  ]);
+  const totalTokensRaw = read([
+    "totalTokens",
+    "total_tokens",
+    "allTokens",
+    "all_tokens",
+    "tokenCount",
+  ]);
+  const contextTokens = read([
+    "contextTokens",
+    "context_tokens",
+    "contextWindow",
+    "context_window",
+    "contextLimit",
+    "context_limit",
+    "maxContextTokens",
+    "max_context_tokens",
+  ]);
+  const totalTokens =
+    totalTokensRaw ??
+    (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+
+  const patch: Partial<SessionTokenStats> = {};
+  if (contextTokens !== null) {
+    patch.contextTokens = contextTokens;
+  }
+  if (inputTokens !== null) {
+    patch.inputTokens = inputTokens;
+  }
+  if (outputTokens !== null) {
+    patch.outputTokens = outputTokens;
+  }
+  if (totalTokens !== null) {
+    patch.totalTokens = totalTokens;
+  }
+  return Object.keys(patch).length > 0 ? patch : null;
+}
+
 function getBoolean(source: Record<string, unknown>, keys: string[]): boolean | null {
   for (const key of keys) {
     const value = source[key];
@@ -748,6 +1381,26 @@ function normalizeModelKey(value: string): string {
   return value.trim().toLowerCase();
 }
 
+function resolveCanonicalModelFromCatalog(
+  value: string | null | undefined,
+  catalog: ModelsListResult["models"],
+): string {
+  const normalized = value?.trim() ?? "";
+  if (!normalized) {
+    return "";
+  }
+  const exact =
+    catalog.find((entry) => `${entry.provider}/${entry.id}` === normalized) ??
+    catalog.find((entry) => entry.id === normalized) ??
+    catalog.find((entry) => `${entry.provider}/${entry.name}` === normalized) ??
+    catalog.find((entry) => entry.name === normalized) ??
+    null;
+  if (!exact) {
+    return normalized;
+  }
+  return `${exact.provider}/${exact.id}`;
+}
+
 function resolveHeartbeatSessionOverride(
   configRoot: unknown,
   defaultAgentId: string,
@@ -837,6 +1490,10 @@ function reconcileSelectedSessionKey(params: {
   );
   if (normalizedMatch) {
     return normalizedMatch.key;
+  }
+  const compatibleMatch = sessions.find((session) => sessionKeysMatch(session.key, previousKey));
+  if (compatibleMatch) {
+    return compatibleMatch.key;
   }
   const primaryMatch = sessions.find(
     (session) => session.key.toLowerCase() === primarySessionKey,
@@ -1296,6 +1953,42 @@ function splitAgentSessionKey(value: string): { agentId: string; rest: string } 
   };
 }
 
+function normalizeAgentId(value: string | null | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function resolveAgentIdWithFallback(value: string | null | undefined): string {
+  return normalizeAgentId(value) || "main";
+}
+
+function resolveAgentChoiceLabel(entry: AgentsListResult["agents"][number]): string {
+  const identityName = entry.identity?.name?.trim() ?? "";
+  if (identityName) {
+    return identityName;
+  }
+  const name = entry.name?.trim() ?? "";
+  if (name) {
+    return name;
+  }
+  return entry.id;
+}
+
+function resolveAgentForSession(
+  agents: AgentsListResult | null,
+  sessionKey: string | null | undefined,
+): AgentChoice {
+  if (agents?.scope === "global") {
+    return { id: "global", label: "global" };
+  }
+  const preferredId = sessionKey ? splitAgentSessionKey(sessionKey)?.agentId ?? null : null;
+  const selectedId = resolveAgentIdWithFallback(preferredId ?? agents?.defaultId);
+  const matched = agents?.agents.find((entry) => normalizeAgentId(entry.id) === selectedId);
+  return {
+    id: selectedId,
+    label: matched ? resolveAgentChoiceLabel(matched) : selectedId,
+  };
+}
+
 function sessionKeysMatch(a: string | null | undefined, b: string | null | undefined): boolean {
   const left = normalizeSessionKeyForMatch(a);
   const right = normalizeSessionKeyForMatch(b);
@@ -1423,30 +2116,956 @@ function mergeStreamingText(previous: string | null, incoming: string): string {
   return `${previous}${incoming}`;
 }
 
-function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | null {
-  if (isToolMessage(raw)) {
+function stripWrappingQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+function normalizeMediaDirectivePath(value: string): string {
+  let next = value.trim();
+  if (!next) {
+    return "";
+  }
+  if (next.startsWith("`") && next.endsWith("`") && next.length > 1) {
+    next = next.slice(1, -1).trim();
+  }
+  next = stripWrappingQuotes(next);
+  // Strip common trailing punctuation generated by LLMs.
+  next = next.replace(/[),.;!?]+$/g, "").trim();
+  if (!next) {
+    return "";
+  }
+  if (/\s/.test(next)) {
+    const firstToken = next.split(/\s+/)[0] ?? "";
+    return firstToken.trim();
+  }
+  return next;
+}
+
+function isAbsoluteFsPath(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("\\\\") ||
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    trimmed.startsWith("~/")
+  );
+}
+
+function normalizeFsPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function trimTrailingSlashes(value: string): string {
+  const normalized = normalizeFsPath(value).trim();
+  if (!normalized) {
+    return "";
+  }
+  return normalized.replace(/\/+$/g, "");
+}
+
+function deriveHomeFromWorkspacePath(workspacePath: string): string {
+  const normalized = trimTrailingSlashes(workspacePath).toLowerCase();
+  const markerIndex = normalized.indexOf(WORKSPACE_MARKER);
+  if (markerIndex <= 0) {
+    return "";
+  }
+  return trimTrailingSlashes(workspacePath).slice(0, markerIndex);
+}
+
+function setRuntimePathHints(next: { homeDir?: string | null; workspaceDir?: string | null }) {
+  const homeDir = trimTrailingSlashes(next.homeDir ?? "");
+  const workspaceDir = trimTrailingSlashes(next.workspaceDir ?? "");
+  if (homeDir) {
+    runtimePathHints.homeDir = homeDir;
+  }
+  if (workspaceDir) {
+    runtimePathHints.workspaceDir = workspaceDir;
+  }
+  if (!runtimePathHints.homeDir && runtimePathHints.workspaceDir) {
+    const derivedHome = deriveHomeFromWorkspacePath(runtimePathHints.workspaceDir);
+    if (derivedHome) {
+      runtimePathHints.homeDir = derivedHome;
+    }
+  }
+  if (!runtimePathHints.workspaceDir && runtimePathHints.homeDir) {
+    runtimePathHints.workspaceDir = `${runtimePathHints.homeDir}${WORKSPACE_MARKER}`;
+  }
+}
+
+function getRuntimeHomeDir(): string {
+  const desktopHomeDir = trimTrailingSlashes(window.desktopInfo?.homeDir ?? "");
+  if (desktopHomeDir) {
+    return desktopHomeDir;
+  }
+  return runtimePathHints.homeDir;
+}
+
+function getRuntimeWorkspaceDir(): string {
+  const desktopWorkspaceDir = trimTrailingSlashes(window.desktopInfo?.workspaceDir ?? "");
+  if (desktopWorkspaceDir) {
+    return desktopWorkspaceDir;
+  }
+  if (runtimePathHints.workspaceDir) {
+    return runtimePathHints.workspaceDir;
+  }
+  const homeDir = getRuntimeHomeDir();
+  if (!homeDir) {
+    return "";
+  }
+  return `${homeDir}${WORKSPACE_MARKER}`;
+}
+
+function collectRuntimePathHintsFromConfig(snapshot: unknown) {
+  if (!isRecord(snapshot)) {
+    return;
+  }
+  const queue: Array<{ value: unknown; keyPath: string; depth: number }> = [
+    { value: snapshot, keyPath: "", depth: 0 },
+  ];
+  let nodes = 0;
+  const MAX_NODES = 600;
+  const MAX_DEPTH = 7;
+  let workspaceCandidate = "";
+  let homeCandidate = "";
+  while (queue.length > 0 && nodes < MAX_NODES) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    nodes += 1;
+    const { value, keyPath, depth } = current;
+    if (typeof value === "string") {
+      const trimmed = trimTrailingSlashes(value);
+      if (!trimmed) {
+        continue;
+      }
+      const lowerValue = trimmed.toLowerCase();
+      const lowerKey = keyPath.toLowerCase();
+      const isAbsoluteLike = isAbsoluteFsPath(trimmed) || trimmed.startsWith("~/");
+      if (!isAbsoluteLike) {
+        continue;
+      }
+      if (!workspaceCandidate && (lowerKey.includes("workspace") || lowerValue.includes(WORKSPACE_MARKER))) {
+        workspaceCandidate = trimmed;
+      }
+      if (!homeCandidate && lowerKey.includes("home")) {
+        homeCandidate = trimmed;
+      }
+      continue;
+    }
+    if (depth >= MAX_DEPTH) {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      for (let index = 0; index < value.length; index += 1) {
+        queue.push({ value: value[index], keyPath: `${keyPath}[${index}]`, depth: depth + 1 });
+      }
+      continue;
+    }
+    if (!isRecord(value)) {
+      continue;
+    }
+    for (const [key, nested] of Object.entries(value)) {
+      const nextKeyPath = keyPath ? `${keyPath}.${key}` : key;
+      queue.push({ value: nested, keyPath: nextKeyPath, depth: depth + 1 });
+    }
+  }
+  const derivedHome = workspaceCandidate ? deriveHomeFromWorkspacePath(workspaceCandidate) : "";
+  setRuntimePathHints({
+    homeDir: homeCandidate || derivedHome || null,
+    workspaceDir: workspaceCandidate || null,
+  });
+}
+
+function fileNameFromPath(value: string): string {
+  const normalized = normalizeFsPath(value);
+  const parts = normalized.split("/").filter(Boolean);
+  return parts[parts.length - 1] ?? "image";
+}
+
+function inferImageMimeTypeFromPath(value: string): string | null {
+  const normalized = normalizeFsPath(value).toLowerCase();
+  const noQuery = normalized.split("?")[0]?.split("#")[0] ?? normalized;
+  if (noQuery.endsWith(".png")) {
+    return "image/png";
+  }
+  if (noQuery.endsWith(".jpg") || noQuery.endsWith(".jpeg")) {
+    return "image/jpeg";
+  }
+  if (noQuery.endsWith(".webp")) {
+    return "image/webp";
+  }
+  if (noQuery.endsWith(".gif")) {
+    return "image/gif";
+  }
+  if (noQuery.endsWith(".bmp")) {
+    return "image/bmp";
+  }
+  if (noQuery.endsWith(".svg")) {
+    return "image/svg+xml";
+  }
+  return null;
+}
+
+function looksLikeBase64Payload(value: string): boolean {
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length < 24 || compact.length % 4 === 1) {
+    return false;
+  }
+  return /^[A-Za-z0-9+/]+=*$/.test(compact);
+}
+
+function toImageDataUrl(base64Payload: string, sourcePathHint: string, mimeHint?: string | null): string | null {
+  const compact = base64Payload.replace(/\s+/g, "").trim();
+  if (!looksLikeBase64Payload(compact)) {
     return null;
   }
-  const text = extractText(raw) ?? "";
+  const mimeType = mimeHint ?? inferImageMimeTypeFromPath(sourcePathHint) ?? "image/png";
+  return `data:${mimeType};base64,${compact}`;
+}
+
+function extractImageDataUrlFromUnknown(
+  value: unknown,
+  sourcePathHint: string,
+  mimeHint?: string | null,
+): string | null {
+  const queue: Array<{ value: unknown; depth: number; mimeHint?: string | null }> = [
+    { value, depth: 0, mimeHint },
+  ];
+  const seen = new Set<unknown>();
+  let traversed = 0;
+  const MAX_NODES = 220;
+  const MAX_DEPTH = 6;
+
+  while (queue.length > 0 && traversed < MAX_NODES) {
+    const current = queue.shift();
+    if (!current) {
+      continue;
+    }
+    traversed += 1;
+    const node = current.value;
+    if (node === null || node === undefined || seen.has(node)) {
+      continue;
+    }
+    seen.add(node);
+
+    if (typeof node === "string") {
+      const trimmed = node.trim();
+      if (!trimmed) {
+        continue;
+      }
+      if (/^data:image\//i.test(trimmed)) {
+        return trimmed;
+      }
+      if (/^(https?:|blob:)/i.test(trimmed)) {
+        return trimmed;
+      }
+      const dataUrl = toImageDataUrl(trimmed, sourcePathHint, current.mimeHint);
+      if (dataUrl) {
+        return dataUrl;
+      }
+      continue;
+    }
+
+    if (Array.isArray(node)) {
+      if (current.depth < MAX_DEPTH) {
+        for (const item of node) {
+          queue.push({ value: item, depth: current.depth + 1, mimeHint: current.mimeHint });
+        }
+      }
+      continue;
+    }
+
+    if (!isRecord(node)) {
+      continue;
+    }
+
+    const inferredMime =
+      getString(node, ["mimeType", "mime_type", "media_type", "contentType", "content_type"]) ??
+      current.mimeHint ??
+      null;
+    const directUrl = getString(node, ["dataUrl", "data_url", "url", "uri", "href", "image_url", "imageUrl"]);
+    if (directUrl) {
+      if (/^data:image\//i.test(directUrl) || /^(https?:|blob:)/i.test(directUrl)) {
+        return directUrl;
+      }
+      const fromRaw = toImageDataUrl(directUrl, sourcePathHint, inferredMime);
+      if (fromRaw) {
+        return fromRaw;
+      }
+    }
+
+    const directBase64 = getString(node, [
+      "base64",
+      "b64",
+      "b64_json",
+      "data",
+      "content",
+      "bytes",
+      "image",
+      "image_base64",
+    ]);
+    if (directBase64) {
+      const asDataUrl = toImageDataUrl(directBase64, sourcePathHint, inferredMime);
+      if (asDataUrl) {
+        return asDataUrl;
+      }
+    }
+
+    if (current.depth >= MAX_DEPTH) {
+      continue;
+    }
+    for (const nested of Object.values(node)) {
+      if (isRecord(nested) || Array.isArray(nested) || typeof nested === "string") {
+        queue.push({ value: nested, depth: current.depth + 1, mimeHint: inferredMime });
+      }
+    }
+  }
+
+  return null;
+}
+
+function pickRemoteImageReadMethods(methods: Set<string>): string[] {
+  const values = [...methods].filter((entry) => typeof entry === "string" && entry.trim());
+  if (values.length === 0) {
+    return [...DEFAULT_REMOTE_IMAGE_READ_METHODS];
+  }
+  const scored = values
+    .map((method) => {
+      const lower = method.trim().toLowerCase();
+      let score = 0;
+      if (lower.includes("read")) {
+        score += 3;
+      }
+      if (lower.includes("file") || lower.includes("fs")) {
+        score += 3;
+      }
+      if (lower.includes("workspace") || lower.includes("media") || lower.includes("image")) {
+        score += 2;
+      }
+      if (lower.includes("chat")) {
+        score -= 2;
+      }
+      return { method, score };
+    })
+    .filter((item) => item.score >= 2)
+    .sort((a, b) => b.score - a.score);
+
+  const methodsByScore = scored.map((item) => item.method);
+  const relatedMethods = values.filter((method) => {
+    const lower = method.toLowerCase();
+    return (
+      lower.includes("read") ||
+      lower.includes("file") ||
+      lower.includes("fs") ||
+      lower.includes("image") ||
+      lower.includes("media") ||
+      lower.includes("workspace")
+    );
+  });
+  const merged = [...methodsByScore, ...relatedMethods, ...DEFAULT_REMOTE_IMAGE_READ_METHODS].filter(
+    (method, index, arr) => arr.indexOf(method) === index,
+  );
+  if (merged.length === 0) {
+    return [...DEFAULT_REMOTE_IMAGE_READ_METHODS];
+  }
+  return merged;
+}
+
+function toGatewayHttpBaseCandidates(rawGatewayUrl: string): string[] {
+  const trimmed = normalizeGatewayUrl(rawGatewayUrl).trim();
+  if (!trimmed) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const push = (value: string) => {
+    const next = value.trim().replace(/\/+$/g, "");
+    if (!next || seen.has(next)) {
+      return;
+    }
+    seen.add(next);
+    candidates.push(next);
+  };
+  const collectFromUrl = (value: URL) => {
+    const protocol =
+      value.protocol === "wss:"
+        ? "https:"
+        : value.protocol === "ws:"
+        ? "http:"
+        : value.protocol;
+    if (protocol !== "http:" && protocol !== "https:") {
+      return;
+    }
+    const originBase = `${protocol}//${value.host}`;
+    push(originBase);
+    const segments = value.pathname.split("/").filter(Boolean);
+    if (segments.length === 0) {
+      return;
+    }
+    for (let i = segments.length; i >= 1; i -= 1) {
+      push(`${originBase}/${segments.slice(0, i).join("/")}`);
+    }
+  };
+
+  try {
+    collectFromUrl(new URL(trimmed));
+  } catch {
+    try {
+      collectFromUrl(new URL(`ws://${trimmed}`));
+    } catch {
+      return [];
+    }
+  }
+  return candidates;
+}
+
+function buildGatewayLocalImageProxyCandidates(rawGatewayUrl: string, filePath: string): string[] {
+  const encodedPath = encodeURIComponent(filePath);
+  return toGatewayHttpBaseCandidates(rawGatewayUrl)
+    .map((base) => `${base}/__claw/local-image?path=${encodedPath}`)
+    .filter((value, index, arr) => arr.indexOf(value) === index);
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (!result) {
+        reject(new Error("empty-data-url"));
+        return;
+      }
+      resolve(result);
+    };
+    reader.onerror = () => {
+      reject(reader.error ?? new Error("file-reader-failed"));
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function extractImageDataUrlFromHttpResponse(
+  response: Response,
+  sourcePathHint: string,
+): Promise<string | null> {
+  const contentType = (response.headers.get("content-type") ?? "").toLowerCase();
+  if (contentType.includes("json")) {
+    try {
+      const payload = await response.json();
+      return extractImageDataUrlFromUnknown(payload, sourcePathHint);
+    } catch {
+      return null;
+    }
+  }
+  if (contentType.startsWith("text/")) {
+    const payload = await response.text();
+    if (!payload.trim()) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(payload);
+      return extractImageDataUrlFromUnknown(parsed, sourcePathHint);
+    } catch {
+      return extractImageDataUrlFromUnknown(payload, sourcePathHint);
+    }
+  }
+  const blob = await response.blob();
+  if (!blob.size) {
+    return null;
+  }
+  if (blob.type.toLowerCase().startsWith("image/")) {
+    return blobToDataUrl(blob);
+  }
+  const inferredType = inferImageMimeTypeFromPath(sourcePathHint) ?? "image/png";
+  return blobToDataUrl(new Blob([blob], { type: inferredType }));
+}
+
+async function resolveRemoteImageViaHttpProxy(
+  gatewayUrl: string,
+  filePath: string,
+): Promise<string | null> {
+  const candidates = buildGatewayLocalImageProxyCandidates(gatewayUrl, filePath);
+  const desktopFetchImageUrl = window.desktopInfo?.fetchImageUrl;
+  for (const candidate of candidates) {
+    if (typeof desktopFetchImageUrl === "function") {
+      try {
+        const result = await desktopFetchImageUrl(candidate);
+        const dataUrl = result?.ok && typeof result.dataUrl === "string" ? result.dataUrl.trim() : "";
+        if (dataUrl) {
+          return dataUrl;
+        }
+      } catch {
+        // fallback to renderer-side fetch
+      }
+    }
+    try {
+      const response = await fetch(candidate, {
+        method: "GET",
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const dataUrl = await extractImageDataUrlFromHttpResponse(response, filePath);
+      if (dataUrl) {
+        return dataUrl;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+function toFileUrl(value: string): string | null {
+  const normalized = normalizeFsPath(value).trim();
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith("~/")) {
+    const homeDir = getRuntimeHomeDir();
+    if (!homeDir) {
+      return null;
+    }
+    const expanded = `${homeDir}/${normalized.slice(2)}`;
+    return toFileUrl(expanded);
+  }
+  if (/^[A-Za-z]:\//.test(normalized)) {
+    return `file:///${encodeURI(normalized)}`;
+  }
+  if (normalized.startsWith("//")) {
+    return `file:${encodeURI(normalized)}`;
+  }
+  if (normalized.startsWith("/")) {
+    return `file://${encodeURI(normalized)}`;
+  }
+  return null;
+}
+
+function buildDesktopLocalImageUrl(localPath: string): string {
+  return `${DESKTOP_LOCAL_IMAGE_SCHEME}://open?path=${encodeURIComponent(localPath)}`;
+}
+
+function localPathFromDesktopLocalImageUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== `${DESKTOP_LOCAL_IMAGE_SCHEME}:`) {
+      return null;
+    }
+    const rawPath = parsed.searchParams.get("path");
+    if (rawPath) {
+      return decodeURIComponent(rawPath);
+    }
+    let pathname = decodeURIComponent(parsed.pathname || "");
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    return pathname || null;
+  } catch {
+    return null;
+  }
+}
+
+function localPathFromWebProxyUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^file:\/\/\/__claw\/local-image\?/i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      const rawPath = parsed.searchParams.get("path");
+      if (!rawPath) {
+        return null;
+      }
+      return decodeURIComponent(rawPath);
+    } catch {
+      return null;
+    }
+  }
+  const marker = "/__claw/local-image?";
+  const parsePath = (raw: string | null): string | null => {
+    if (!raw) {
+      return null;
+    }
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  };
+
+  if (trimmed.startsWith(marker)) {
+    return parsePath(new URLSearchParams(trimmed.slice(marker.length)).get("path"));
+  }
+
+  const markerIndex = trimmed.indexOf(marker);
+  if (markerIndex >= 0) {
+    return parsePath(new URLSearchParams(trimmed.slice(markerIndex + marker.length)).get("path"));
+  }
+
+  if (!trimmed.includes("/__claw/local-image")) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed, "http://127.0.0.1");
+    return parsePath(parsed.searchParams.get("path"));
+  } catch {
+    return null;
+  }
+}
+
+function isDesktopRuntime(): boolean {
+  if (window.desktopInfo?.isDesktop) {
+    return true;
+  }
+  return window.location.protocol === "file:";
+}
+
+function canUseWebLocalImageProxy(): boolean {
+  const protocol = window.location.protocol;
+  return protocol === "http:" || protocol === "https:";
+}
+
+function filePathFromFileUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "file:") {
+      return null;
+    }
+    let pathname = decodeURIComponent(parsed.pathname || "");
+    if (!pathname) {
+      return null;
+    }
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    return pathname;
+  } catch {
+    return null;
+  }
+}
+
+function buildWebLocalImageProxyUrl(localPath: string): string {
+  if (!canUseWebLocalImageProxy()) {
+    return "";
+  }
+  const origin = window.location.origin;
+  return `${origin}/__claw/local-image?path=${encodeURIComponent(localPath)}`;
+}
+
+function resolveWorkspaceRelativeImagePath(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (trimmed.includes("/") || trimmed.includes("\\")) {
+    return null;
+  }
+  if (!inferImageMimeTypeFromPath(trimmed)) {
+    return null;
+  }
+  const workspaceDir = getRuntimeWorkspaceDir();
+  if (!workspaceDir) {
+    return null;
+  }
+  return `${workspaceDir}/${trimmed}`;
+}
+
+function resolveMediaDirectivePath(rawPath: string): string | null {
+  const cleaned = normalizeMediaDirectivePath(rawPath);
+  if (!cleaned) {
+    return null;
+  }
+  const homeDir = getRuntimeHomeDir();
+  const workspaceDir = getRuntimeWorkspaceDir();
+  if (cleaned.startsWith("~/")) {
+    if (!homeDir) {
+      return null;
+    }
+    return `${homeDir}/${cleaned.slice(2)}`;
+  }
+  if (isAbsoluteFsPath(cleaned)) {
+    return cleaned;
+  }
+  // Only filename is accepted for relative directives; it maps to ~/.openclaw/workspace.
+  if (cleaned.includes("/") || cleaned.includes("\\")) {
+    return null;
+  }
+  if (!workspaceDir) {
+    if (!isDesktopRuntime()) {
+      return cleaned;
+    }
+    return null;
+  }
+  return `${workspaceDir}/${cleaned}`;
+}
+
+function extractMediaAttachmentsFromText(text: string): {
+  cleanedText: string;
+  attachments: Attachment[];
+} {
+  const attachments: Attachment[] = [];
+  const seen = new Set<string>();
+  const retainedLines: string[] = [];
+  const lines = text.split(/\r?\n/);
+
+  for (const line of lines) {
+    const match = MEDIA_PREFIX_RE.exec(line);
+    if (!match || match.index < 0) {
+      retainedLines.push(line);
+      continue;
+    }
+    const prefix = line.slice(0, match.index).trimEnd();
+    const rawPath = line.slice(match.index + match[0].length).trim();
+    const resolved = resolveMediaDirectivePath(rawPath);
+    if (!resolved) {
+      retainedLines.push(line);
+      continue;
+    }
+    const mimeType = inferImageMimeTypeFromPath(resolved);
+    const dataUrl = isDesktopRuntime()
+      ? buildDesktopLocalImageUrl(resolved)
+      : buildWebLocalImageProxyUrl(resolved) || toFileUrl(resolved);
+    if (!mimeType || !dataUrl) {
+      retainedLines.push(line);
+      continue;
+    }
+    if (seen.has(dataUrl)) {
+      continue;
+    }
+    seen.add(dataUrl);
+    attachments.push({
+      id: `${generateUUID()}-media`,
+      name: fileNameFromPath(resolved),
+      size: 0,
+      type: mimeType,
+      dataUrl,
+      isImage: true,
+    });
+    if (prefix) {
+      retainedLines.push(prefix);
+    }
+  }
+
+  const cleanedText = retainedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return { cleanedText, attachments };
+}
+
+function buildAttachmentSignature(type: string, dataUrl: string): string {
+  const normalizedType = type.trim().toLowerCase();
+  const normalizedDataUrl = dataUrl.trim();
+  const head = normalizedDataUrl.slice(0, ATTACHMENT_FINGERPRINT_HEAD);
+  const tail =
+    normalizedDataUrl.length > ATTACHMENT_FINGERPRINT_HEAD + ATTACHMENT_FINGERPRINT_TAIL
+      ? normalizedDataUrl.slice(-ATTACHMENT_FINGERPRINT_TAIL)
+      : "";
+  return `${normalizedType}:${normalizedDataUrl.length}:${head}:${tail}`;
+}
+
+function toolMessageMayContainImage(raw: unknown): boolean {
+  if (!isRecord(raw)) {
+    return false;
+  }
+  if (Object.keys(raw).some((key) => key.toLowerCase().includes("image"))) {
+    return true;
+  }
+  const directType = getString(raw, ["type", "event", "kind"])?.toLowerCase() ?? "";
+  if (directType.includes("image")) {
+    return true;
+  }
+  const content = raw.content;
+  if (Array.isArray(content)) {
+    for (const part of content) {
+      if (!isRecord(part)) {
+        continue;
+      }
+      const type = getString(part, ["type"])?.toLowerCase() ?? "";
+      if (type.includes("image")) {
+        return true;
+      }
+      if (part.image_url !== undefined || part.imageUrl !== undefined) {
+        return true;
+      }
+      if (isRecord(part.source)) {
+        const mediaType =
+          getString(part.source, ["media_type", "mimeType", "mime_type", "contentType", "content_type"]) ??
+          "";
+        if (mediaType.toLowerCase().includes("image")) {
+          return true;
+        }
+      }
+      if (Object.keys(part).some((key) => key.toLowerCase().includes("image"))) {
+        return true;
+      }
+    }
+  }
+  const candidates = [raw.content, raw.output, raw.result, raw.response, raw.text];
+  for (const value of candidates) {
+    if (typeof value !== "string") {
+      continue;
+    }
+    const sample = value.slice(0, 2048).toLowerCase();
+    if (
+      sample.includes("data:image/") ||
+      sample.includes("media:") ||
+      /\.(png|jpe?g|webp|gif|bmp|svg)\b/i.test(sample)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeImageSourceData(rawData: string, mimeType: string): { dataUrl: string; fromBase64: boolean } {
+  const trimmed = rawData.trim();
+  if (!trimmed) {
+    return { dataUrl: "", fromBase64: false };
+  }
+  if (/^data:image\//i.test(trimmed)) {
+    return { dataUrl: trimmed, fromBase64: false };
+  }
+  if (/^(https?:|blob:)/i.test(trimmed)) {
+    return { dataUrl: trimmed, fromBase64: false };
+  }
+  const fromDesktopLocalPath = localPathFromDesktopLocalImageUrl(trimmed);
+  if (fromDesktopLocalPath) {
+    if (isDesktopRuntime()) {
+      return { dataUrl: buildDesktopLocalImageUrl(fromDesktopLocalPath), fromBase64: false };
+    }
+    const proxied = buildWebLocalImageProxyUrl(fromDesktopLocalPath);
+    return { dataUrl: proxied || trimmed, fromBase64: false };
+  }
+  const fromProxyPath = localPathFromWebProxyUrl(trimmed);
+  if (fromProxyPath) {
+    const resolvedProxyPath =
+      isAbsoluteFsPath(fromProxyPath) || fromProxyPath.startsWith("~")
+        ? fromProxyPath
+        : getRuntimeWorkspaceDir()
+        ? `${getRuntimeWorkspaceDir()}/${fromProxyPath}`
+        : fromProxyPath;
+    if (isDesktopRuntime()) {
+      return { dataUrl: buildDesktopLocalImageUrl(resolvedProxyPath), fromBase64: false };
+    }
+    const proxied = buildWebLocalImageProxyUrl(resolvedProxyPath);
+    return { dataUrl: proxied || trimmed, fromBase64: false };
+  }
+  if (/^file:/i.test(trimmed)) {
+    if (isDesktopRuntime()) {
+      const asLocalPath = filePathFromFileUrl(trimmed);
+      if (asLocalPath) {
+        return { dataUrl: buildDesktopLocalImageUrl(asLocalPath), fromBase64: false };
+      }
+      return { dataUrl: trimmed, fromBase64: false };
+    }
+    const asLocalPath = filePathFromFileUrl(trimmed);
+    if (asLocalPath) {
+      const proxied = buildWebLocalImageProxyUrl(asLocalPath);
+      return { dataUrl: proxied || trimmed, fromBase64: false };
+    }
+    return { dataUrl: trimmed, fromBase64: false };
+  }
+  if (isAbsoluteFsPath(trimmed)) {
+    if (isDesktopRuntime()) {
+      return { dataUrl: buildDesktopLocalImageUrl(trimmed), fromBase64: false };
+    }
+    if (!isDesktopRuntime()) {
+      const proxied = buildWebLocalImageProxyUrl(trimmed);
+      if (proxied) {
+        return { dataUrl: proxied, fromBase64: false };
+      }
+      const asFileUrl = toFileUrl(trimmed);
+      if (asFileUrl) {
+        return { dataUrl: asFileUrl, fromBase64: false };
+      }
+    }
+    const asFileUrl = toFileUrl(trimmed);
+    if (asFileUrl) {
+      return { dataUrl: asFileUrl, fromBase64: false };
+    }
+  }
+  const workspaceRelativePath = resolveWorkspaceRelativeImagePath(trimmed);
+  if (workspaceRelativePath) {
+    if (isDesktopRuntime()) {
+      return { dataUrl: buildDesktopLocalImageUrl(workspaceRelativePath), fromBase64: false };
+    }
+    const proxied = buildWebLocalImageProxyUrl(workspaceRelativePath);
+    return { dataUrl: proxied || workspaceRelativePath, fromBase64: false };
+  }
+  if (trimmed.startsWith("/") && Boolean(inferImageMimeTypeFromPath(trimmed))) {
+    return { dataUrl: trimmed, fromBase64: false };
+  }
+  return { dataUrl: `data:${mimeType};base64,${trimmed}`, fromBase64: true };
+}
+
+function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | null {
+  const toolMessage = isToolMessage(raw);
+  if (toolMessage && !toolMessageMayContainImage(raw)) {
+    return null;
+  }
+  const rawText = toolMessage ? "" : (extractText(raw) ?? "");
+  let text = rawText;
+  let mediaAttachments: Attachment[] = [];
+  if (!toolMessage && rawText && MEDIA_PREFIX_RE.test(rawText)) {
+    const mediaResult = extractMediaAttachmentsFromText(rawText);
+    text = mediaResult.cleanedText;
+    mediaAttachments = mediaResult.attachments;
+  }
   const images = extractImages(raw);
-  const attachments: Attachment[] = images.map((img, index) => ({
-    id: `${generateUUID()}-${index}`,
-    name: `image-${index + 1}`,
-    size: img.data.length,
-    type: img.mimeType,
-    dataUrl: `data:${img.mimeType};base64,${img.data}`,
-    isImage: true,
-  }));
-  if (!text && attachments.length === 0) {
+  const imageAttachments: Attachment[] = images
+    .map((img, index) => {
+      const normalized = normalizeImageSourceData(img.data, img.mimeType);
+      if (!normalized.dataUrl) {
+        return null;
+      }
+      return {
+        id: `${generateUUID()}-${index}`,
+        name: `image-${index + 1}`,
+        size: normalized.fromBase64 ? estimateBase64Bytes(img.data) : normalized.dataUrl.length,
+        type: img.mimeType,
+        dataUrl: normalized.dataUrl,
+        isImage: true,
+      } satisfies Attachment;
+    })
+    .filter((item): item is Attachment => Boolean(item));
+  const dedupeSignatures = new Set<string>();
+  const attachments = [...imageAttachments, ...mediaAttachments].filter((item) => {
+    const signature = buildAttachmentSignature(item.type, item.dataUrl);
+    if (dedupeSignatures.has(signature)) {
+      return false;
+    }
+    dedupeSignatures.add(signature);
+    return true;
+  });
+  if (toolMessage && attachments.length === 0) {
+    return null;
+  }
+  const renderedText = toolMessage ? "" : text;
+  if (!renderedText && attachments.length === 0) {
     return null;
   }
   const roleRaw = (raw as Record<string, unknown>)?.role;
   const timestampRaw = (raw as Record<string, unknown>)?.timestamp;
-  const role = roleRaw === "user" ? "user" : roleRaw === "assistant" ? "assistant" : "system";
+  const role = toolMessage
+    ? "assistant"
+    : roleRaw === "user"
+    ? "user"
+    : roleRaw === "assistant"
+    ? "assistant"
+    : "system";
   return {
     id: generateUUID(),
     role,
-    text,
+    text: renderedText,
     timestamp:
       typeof timestampRaw === "number" && Number.isFinite(timestampRaw)
         ? timestampRaw
@@ -1454,6 +3073,14 @@ function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | 
     attachments: attachments.length > 0 ? attachments : undefined,
     raw,
   };
+}
+
+function toChatMessageSafe(raw: unknown, fallbackTimestamp?: number): ChatMessage | null {
+  try {
+    return toChatMessage(raw, fallbackTimestamp);
+  } catch {
+    return null;
+  }
 }
 
 export default function App() {
@@ -1486,6 +3113,11 @@ export default function App() {
   const [uiSettingsSchemes, setUiSettingsSchemes] = useState<UiSettingsScheme[]>(
     () => loadUiSettingsSchemes(),
   );
+  const [modelShortcutSchemes, setModelShortcutSchemes] = useState<ModelShortcutSchemeMap>(
+    () => loadModelShortcutSchemes(),
+  );
+  const [agentSessionShortcutSchemes, setAgentSessionShortcutSchemes] =
+    useState<AgentSessionShortcutSchemeMap>(() => loadAgentSessionShortcutSchemes());
   const [activeUiSettingsSchemeId, setActiveUiSettingsSchemeId] = useState<string>(
     () => loadStored(STORAGE_KEYS.activeUiSettingsScheme, BUILTIN_UI_SETTINGS_SCHEME_ID),
   );
@@ -1505,6 +3137,7 @@ export default function App() {
   const [canLoadMoreSessions, setCanLoadMoreSessions] = useState(false);
   const [canLoadMoreHistory, setCanLoadMoreHistory] = useState(false);
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
+  const [deletingSessionKey, setDeletingSessionKey] = useState<string | null>(null);
 
   const clientRef = useRef<GatewayClient | null>(null);
   const selectedSessionRef = useRef<string | null>(selectedSessionKey);
@@ -1521,6 +3154,14 @@ export default function App() {
   const agentFinalizeTimerByRunRef = useRef<Record<string, number>>({});
   const finalizedAssistantByRunRef = useRef<Map<string, string>>(new Map());
   const lastFinalizedAssistantRef = useRef<{ text: string; at: number } | null>(null);
+  const gatewayMethodsRef = useRef<Set<string>>(new Set());
+  const remoteImageDataCacheRef = useRef<Map<string, string>>(new Map());
+  const sessionsRef = useRef<GatewaySessionRow[]>(sessions);
+  const pendingStreamTextRef = useRef<string | null>(null);
+  const streamFlushRafRef = useRef<number | null>(null);
+  const pendingSessionCreatesRef = useRef<Set<string>>(new Set());
+  const deferredSessionRefreshTimersRef = useRef<number[]>([]);
+  const deletingSessionKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     selectedSessionRef.current = selectedSessionKey;
@@ -1538,18 +3179,127 @@ export default function App() {
     streamTextRef.current = streamText;
   }, [streamText]);
 
-  const setStreamTextSynced = (next: string | null) => {
-    streamTextRef.current = next;
-    setStreamText(next);
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
+
+  const clearDeferredSessionRefreshTimers = () => {
+    for (const timer of deferredSessionRefreshTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    deferredSessionRefreshTimersRef.current = [];
   };
 
-  const mergeStreamTextSynced = (incoming: string) => {
-    setStreamText((prev) => {
-      const merged = mergeStreamingText(prev, incoming);
-      streamTextRef.current = merged;
-      return merged;
+  const flushPendingStreamText = useCallback(() => {
+    streamFlushRafRef.current = null;
+    const next = pendingStreamTextRef.current;
+    pendingStreamTextRef.current = null;
+    if (next === streamTextRef.current) {
+      return;
+    }
+    streamTextRef.current = next;
+    setStreamText(next);
+  }, []);
+
+  const setStreamTextSynced = useCallback((next: string | null) => {
+    pendingStreamTextRef.current = null;
+    if (streamFlushRafRef.current !== null) {
+      window.cancelAnimationFrame(streamFlushRafRef.current);
+      streamFlushRafRef.current = null;
+    }
+    if (next === streamTextRef.current) {
+      return;
+    }
+    streamTextRef.current = next;
+    setStreamText(next);
+  }, []);
+
+  const mergeStreamTextSynced = useCallback((incoming: string) => {
+    const current = pendingStreamTextRef.current ?? streamTextRef.current;
+    pendingStreamTextRef.current = mergeStreamingText(current, incoming);
+    if (streamFlushRafRef.current !== null) {
+      return;
+    }
+    streamFlushRafRef.current = window.requestAnimationFrame(() => {
+      flushPendingStreamText();
     });
+  }, [flushPendingStreamText]);
+
+  const cacheRemoteImageDataUrl = (pathKey: string, dataUrl: string) => {
+    const cache = remoteImageDataCacheRef.current;
+    if (cache.has(pathKey)) {
+      cache.delete(pathKey);
+    }
+    cache.set(pathKey, dataUrl);
+    while (cache.size > REMOTE_IMAGE_CACHE_LIMIT) {
+      const oldestKey = cache.keys().next().value;
+      if (!oldestKey) {
+        break;
+      }
+      cache.delete(oldestKey);
+    }
   };
+
+  const resolveRemoteImage = useCallback(async (filePath: string): Promise<string | null> => {
+    const normalizedPath = filePath.trim();
+    if (!normalizedPath) {
+      return null;
+    }
+    const cached = remoteImageDataCacheRef.current.get(normalizedPath);
+    if (cached) {
+      cacheRemoteImageDataUrl(normalizedPath, cached);
+      return cached;
+    }
+    const client = clientRef.current;
+    if (!client || !connected) {
+      return null;
+    }
+    const methods = pickRemoteImageReadMethods(gatewayMethodsRef.current);
+    if (methods.length === 0) {
+      return null;
+    }
+
+    const paramVariants: Record<string, unknown>[] = [
+      { path: normalizedPath },
+      { filePath: normalizedPath },
+      { file_path: normalizedPath },
+      { source: normalizedPath },
+      { uri: normalizedPath },
+      { path: normalizedPath, encoding: "base64" },
+      { filePath: normalizedPath, encoding: "base64" },
+      { path: normalizedPath, format: "base64" },
+      { filePath: normalizedPath, format: "base64" },
+      { path: normalizedPath, responseType: "base64" },
+    ];
+
+    const seenParamKeys = new Set<string>();
+    for (const method of methods) {
+      for (const params of paramVariants) {
+        const dedupeKey = `${method}:${JSON.stringify(params)}`;
+        if (seenParamKeys.has(dedupeKey)) {
+          continue;
+        }
+        seenParamKeys.add(dedupeKey);
+        try {
+          const payload = await client.request(method, params);
+          const dataUrl = extractImageDataUrlFromUnknown(payload, normalizedPath);
+          if (!dataUrl) {
+            continue;
+          }
+          cacheRemoteImageDataUrl(normalizedPath, dataUrl);
+          return dataUrl;
+        } catch {
+          // try next method/params
+        }
+      }
+    }
+    const httpDataUrl = await resolveRemoteImageViaHttpProxy(gatewayUrl, normalizedPath);
+    if (httpDataUrl) {
+      cacheRemoteImageDataUrl(normalizedPath, httpDataUrl);
+      return httpDataUrl;
+    }
+    return null;
+  }, [connected, gatewayUrl]);
 
   const shouldSkipAssistantFinal = (runId: string | null | undefined, text: string): boolean => {
     const normalizedText = text.trim();
@@ -1578,6 +3328,58 @@ export default function App() {
     }
     lastFinalizedAssistantRef.current = { text: normalizedText, at: now };
     return false;
+  };
+
+  const applySessionTokenStatsFromMessage = (
+    rawMessage: unknown,
+    sessionKeyHint?: string | null,
+  ) => {
+    const patch = extractSessionTokenStatsFromMessage(rawMessage);
+    if (!patch) {
+      return;
+    }
+    const activeSessionKey = selectedSessionRef.current;
+    setSessions((prev) => {
+      let didChange = false;
+      const next = prev.map((session) => {
+        const shouldPatch = sessionKeyHint
+          ? sessionKeysMatch(session.key, sessionKeyHint)
+          : activeSessionKey
+            ? sessionKeysMatch(session.key, activeSessionKey)
+            : false;
+        if (!shouldPatch) {
+          return session;
+        }
+        const mergedInputTokens = patch.inputTokens ?? toFiniteNumber(session.inputTokens);
+        const mergedOutputTokens = patch.outputTokens ?? toFiniteNumber(session.outputTokens);
+        const mergedTotalTokens =
+          patch.totalTokens ??
+          toFiniteNumber(session.totalTokens) ??
+          (mergedInputTokens !== null && mergedOutputTokens !== null
+            ? mergedInputTokens + mergedOutputTokens
+            : undefined);
+        const mergedContextTokens = patch.contextTokens ?? toFiniteNumber(session.contextTokens);
+        const nextSession: GatewaySessionRow = {
+          ...session,
+          inputTokens: mergedInputTokens ?? undefined,
+          outputTokens: mergedOutputTokens ?? undefined,
+          totalTokens: mergedTotalTokens ?? undefined,
+          contextTokens: mergedContextTokens ?? undefined,
+          updatedAt: Date.now(),
+        };
+        if (
+          nextSession.inputTokens === session.inputTokens &&
+          nextSession.outputTokens === session.outputTokens &&
+          nextSession.totalTokens === session.totalTokens &&
+          nextSession.contextTokens === session.contextTokens
+        ) {
+          return session;
+        }
+        didChange = true;
+        return nextSession;
+      });
+      return didChange ? next : prev;
+    });
   };
 
   const clearAgentFinalizeTimer = (runId: string | null | undefined) => {
@@ -1622,6 +3424,7 @@ export default function App() {
           const activeSessionKey = selectedSessionRef.current;
           if (client && activeSessionKey) {
             void loadHistory(client, activeSessionKey, getHistoryLimit(activeSessionKey));
+            refreshSessionsWithFollowUp(client);
           }
           return;
         }
@@ -1643,7 +3446,7 @@ export default function App() {
         const client = clientRef.current;
         const activeSessionKey = selectedSessionRef.current;
         if (client && activeSessionKey) {
-          void refreshSessions(client);
+          refreshSessionsWithFollowUp(client);
         }
         return;
       }
@@ -1673,6 +3476,12 @@ export default function App() {
     window.addEventListener("pointerdown", warmup, { passive: true });
     window.addEventListener("keydown", warmup);
     return () => {
+      clearDeferredSessionRefreshTimers();
+      if (streamFlushRafRef.current !== null) {
+        window.cancelAnimationFrame(streamFlushRafRef.current);
+        streamFlushRafRef.current = null;
+      }
+      pendingStreamTextRef.current = null;
       for (const timer of Object.values(agentFinalizeTimerByRunRef.current)) {
         window.clearTimeout(timer);
       }
@@ -1787,6 +3596,285 @@ export default function App() {
     );
   };
 
+  const handleSaveModelShortcutScheme = (slotRaw: number) => {
+    const slot = normalizeShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    const existing = modelShortcutSchemes[String(slot)];
+    const model = currentShortcutModel.trim();
+    if (!model) {
+      pushSystemMessage("Cannot save model shortcut: active session has no model.");
+      return;
+    }
+    const nextScheme: ModelShortcutScheme = {
+      slot,
+      combo: existing?.combo ?? getDefaultShortcutCombo(slot),
+      model,
+      thinkingLevel: currentShortcutThinkingLevel,
+      updatedAt: Date.now(),
+    };
+    setModelShortcutSchemes((prev) =>
+      normalizeModelShortcutSchemes({
+        ...prev,
+        [String(slot)]: nextScheme,
+      })
+    );
+    pushSystemMessage(
+      `saved ${resolveShortcutLabel(nextScheme.combo)} → ${model} · thinking ${nextScheme.thinkingLevel}`,
+    );
+  };
+
+  const handleClearModelShortcutScheme = (slotRaw: number) => {
+    const slot = normalizeShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    setModelShortcutSchemes((prev) => {
+      if (!(String(slot) in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[String(slot)];
+      return next;
+    });
+  };
+
+  const handleChangeModelShortcutSchemeCombo = (
+    slotRaw: number,
+    comboRaw: ShortcutCombo,
+  ) => {
+    const slot = normalizeShortcutSlot(slotRaw);
+    const combo = normalizeShortcutCombo(comboRaw);
+    if (slot === null || combo === null) {
+      return;
+    }
+    const target = modelShortcutSchemes[String(slot)];
+    if (!target || shortcutComboSignature(target.combo) === shortcutComboSignature(combo)) {
+      return;
+    }
+    const occupiedEntry =
+      Object.values(modelShortcutSchemes).find(
+        (entry) =>
+          entry &&
+          entry.slot !== slot &&
+          shortcutComboSignature(entry.combo) === shortcutComboSignature(combo),
+      ) ?? null;
+    setModelShortcutSchemes((prev) => {
+      const target = prev[String(slot)];
+      if (!target || shortcutComboSignature(target.combo) === shortcutComboSignature(combo)) {
+        return prev;
+      }
+      const next = { ...prev };
+      const occupiedEntry = Object.values(prev).find(
+        (entry) =>
+          entry &&
+          entry.slot !== slot &&
+          shortcutComboSignature(entry.combo) === shortcutComboSignature(combo),
+      );
+      if (occupiedEntry) {
+        next[String(occupiedEntry.slot)] = {
+          ...occupiedEntry,
+          combo: target.combo,
+          updatedAt: Date.now(),
+        };
+      }
+      next[String(slot)] = {
+        ...target,
+        combo,
+        updatedAt: Date.now(),
+      };
+      return normalizeModelShortcutSchemes(next);
+    });
+    if (occupiedEntry) {
+      pushSystemMessage(
+        `shortcut updated: slot ${slot} → ${resolveShortcutLabel(combo)} (swapped with slot ${occupiedEntry.slot})`,
+      );
+    } else {
+      pushSystemMessage(
+        `shortcut updated: slot ${slot} → ${resolveShortcutLabel(combo)}`,
+      );
+    }
+  };
+
+  const applyModelShortcutScheme = async (
+    scheme: ModelShortcutScheme,
+    source: "shortcut" | "manual",
+  ) => {
+    const client = clientRef.current;
+    const key = selectedSessionRef.current;
+    if (!client || !key) {
+      return;
+    }
+    const thinking = normalizeThinkingValue(scheme.thinkingLevel);
+    try {
+      await client.request("sessions.patch", {
+        key,
+        model: scheme.model,
+        thinkingLevel: thinking,
+      });
+      if (normalizeModelKey(scheme.model) === "default") {
+        setSessionModelOverrides((prev) => clearOverride(prev, key));
+      } else {
+        setSessionModelOverrides((prev) => ({ ...prev, [key]: scheme.model }));
+      }
+      setSessionThinkingOverrides((prev) => ({ ...prev, [key]: thinking }));
+      await refreshSessions(client);
+      await loadModels(client);
+      if (source === "shortcut") {
+        pushSystemMessage(
+          `switched by ${resolveShortcutLabel(scheme.combo)} → ${scheme.model} · thinking ${thinking}`,
+        );
+      }
+    } catch (err) {
+      pushSystemMessage(`Model shortcut failed: ${String(err)}`);
+    }
+  };
+
+  const handleApplyModelShortcutScheme = async (
+    slotRaw: number,
+    source: "shortcut" | "manual" = "manual",
+  ) => {
+    const slot = normalizeShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    const scheme = modelShortcutSchemes[String(slot)];
+    if (!scheme) {
+      if (source === "manual") {
+        pushSystemMessage(`No saved scheme in slot ${slot}.`);
+      }
+      return;
+    }
+    await applyModelShortcutScheme(scheme, source);
+  };
+
+  const handleSaveAgentSessionShortcutScheme = (slotRaw: number) => {
+    const slot = normalizeAgentSessionShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    const existing = agentSessionShortcutSchemes[String(slot)];
+    const agentId = currentShortcutAgentId.trim();
+    if (!agentId) {
+      pushSystemMessage("Cannot save agent session shortcut: no active agent.");
+      return;
+    }
+    const nextScheme: AgentSessionShortcutScheme = {
+      slot,
+      combo:
+        existing?.combo ?? {
+          ...getDefaultAgentSessionShortcutCombo(slot),
+          key: getDefaultAgentSessionShortcutKey(slot),
+        },
+      agentId,
+      agentLabel: currentShortcutAgentLabel || agentId,
+      updatedAt: Date.now(),
+    };
+    setAgentSessionShortcutSchemes((prev) =>
+      normalizeAgentSessionShortcutSchemes({
+        ...prev,
+        [String(slot)]: nextScheme,
+      }),
+    );
+    pushSystemMessage(
+      `saved ${resolveShortcutLabel(nextScheme.combo)} → new session with ${nextScheme.agentLabel}`,
+    );
+  };
+
+  const handleClearAgentSessionShortcutScheme = (slotRaw: number) => {
+    const slot = normalizeAgentSessionShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    setAgentSessionShortcutSchemes((prev) => {
+      if (!(String(slot) in prev)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[String(slot)];
+      return next;
+    });
+  };
+
+  const handleChangeAgentSessionShortcutSchemeCombo = (
+    slotRaw: number,
+    comboRaw: ShortcutCombo,
+  ) => {
+    const slot = normalizeAgentSessionShortcutSlot(slotRaw);
+    const combo = normalizeShortcutCombo(comboRaw);
+    if (slot === null || combo === null) {
+      return;
+    }
+    const target = agentSessionShortcutSchemes[String(slot)];
+    if (!target || shortcutComboSignature(target.combo) === shortcutComboSignature(combo)) {
+      return;
+    }
+    const occupiedEntry =
+      Object.values(agentSessionShortcutSchemes).find(
+        (entry) =>
+          entry &&
+          entry.slot !== slot &&
+          shortcutComboSignature(entry.combo) === shortcutComboSignature(combo),
+      ) ?? null;
+    setAgentSessionShortcutSchemes((prev) => {
+      const target = prev[String(slot)];
+      if (!target || shortcutComboSignature(target.combo) === shortcutComboSignature(combo)) {
+        return prev;
+      }
+      const next = { ...prev };
+      const occupiedEntry = Object.values(prev).find(
+        (entry) =>
+          entry &&
+          entry.slot !== slot &&
+          shortcutComboSignature(entry.combo) === shortcutComboSignature(combo),
+      );
+      if (occupiedEntry) {
+        next[String(occupiedEntry.slot)] = {
+          ...occupiedEntry,
+          combo: target.combo,
+          updatedAt: Date.now(),
+        };
+      }
+      next[String(slot)] = {
+        ...target,
+        combo,
+        updatedAt: Date.now(),
+      };
+      return normalizeAgentSessionShortcutSchemes(next);
+    });
+    if (occupiedEntry) {
+      pushSystemMessage(
+        `agent shortcut updated: slot ${slot} → ${resolveShortcutLabel(combo)} (swapped with slot ${occupiedEntry.slot})`,
+      );
+    } else {
+      pushSystemMessage(`agent shortcut updated: slot ${slot} → ${resolveShortcutLabel(combo)}`);
+    }
+  };
+
+  const handleApplyAgentSessionShortcutScheme = async (
+    slotRaw: number,
+    source: "shortcut" | "manual" = "manual",
+  ) => {
+    const slot = normalizeAgentSessionShortcutSlot(slotRaw);
+    if (slot === null) {
+      return;
+    }
+    const scheme = agentSessionShortcutSchemes[String(slot)];
+    if (!scheme) {
+      if (source === "manual") {
+        pushSystemMessage(`No saved agent session shortcut in slot ${slot}.`);
+      }
+      return;
+    }
+    const key = await createSession("", true, scheme.agentId);
+    if (source === "shortcut" && key) {
+      pushSystemMessage(
+        `created session ${key} via ${resolveShortcutLabel(scheme.combo)} (agent: ${scheme.agentLabel})`,
+      );
+    }
+  };
+
   useEffect(() => {
     if (
       activeUiSettingsSchemeId !== BUILTIN_UI_SETTINGS_SCHEME_ID &&
@@ -1852,6 +3940,14 @@ export default function App() {
   }, [uiSettingsSchemes]);
 
   useEffect(() => {
+    saveModelShortcutSchemes(modelShortcutSchemes);
+  }, [modelShortcutSchemes]);
+
+  useEffect(() => {
+    saveAgentSessionShortcutSchemes(agentSessionShortcutSchemes);
+  }, [agentSessionShortcutSchemes]);
+
+  useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEYS.activeUiSettingsScheme, activeUiSettingsSchemeId);
     } catch {
@@ -1870,6 +3966,16 @@ export default function App() {
     } catch {
       // ignore
     }
+  }, [gatewayUrl]);
+
+  useEffect(() => {
+    const setGatewayUrl = window.desktopInfo?.setGatewayUrl;
+    if (typeof setGatewayUrl !== "function") {
+      return;
+    }
+    void setGatewayUrl(gatewayUrl).catch(() => {
+      // ignore desktop bridge errors
+    });
   }, [gatewayUrl]);
 
   useEffect(() => {
@@ -1901,6 +4007,11 @@ export default function App() {
         setConnected(true);
         setConnectionNote(null);
         setPairingRequired(false);
+        gatewayMethodsRef.current = new Set(
+          Array.isArray(hello.features?.methods)
+            ? hello.features.methods.filter((item): item is string => typeof item === "string")
+            : [],
+        );
         setServerInfo({
           version: typeof hello.server?.version === "string" ? hello.server.version : null,
           commit: typeof hello.server?.commit === "string" ? hello.server.commit : null,
@@ -1916,6 +4027,7 @@ export default function App() {
       },
       onClose: (info) => {
         setConnected(false);
+        gatewayMethodsRef.current.clear();
         const reason = info.reason?.trim() ?? "";
         if (reason.toLowerCase().includes("pairing")) {
           setPairingRequired(true);
@@ -1970,6 +4082,9 @@ export default function App() {
     if (!client || !selectedSessionKey) {
       return;
     }
+    if (pendingSessionCreatesRef.current.has(selectedSessionKey)) {
+      return;
+    }
     setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[selectedSessionKey] ?? false);
     void loadHistory(client, selectedSessionKey, getHistoryLimit(selectedSessionKey));
   }, [connected, selectedSessionKey]);
@@ -1978,8 +4093,46 @@ export default function App() {
     if (!selectedSessionKey) {
       return null;
     }
-    return sessions.find((session) => session.key === selectedSessionKey) ?? null;
+    return (
+      sessions.find((session) => session.key === selectedSessionKey) ??
+      sessions.find((session) => sessionKeysMatch(session.key, selectedSessionKey)) ??
+      null
+    );
   }, [sessions, selectedSessionKey]);
+
+  const currentSessionAgent = useMemo(
+    () => resolveAgentForSession(agents, selectedSessionKey ?? currentSession?.key),
+    [agents, selectedSessionKey, currentSession?.key],
+  );
+
+  const defaultAgentChoice = useMemo(
+    () => resolveAgentForSession(agents, null),
+    [agents],
+  );
+
+  const newSessionAgentChoices = useMemo(() => {
+    const listedAgents = agents?.agents ?? [];
+    const next: AgentChoice[] = [];
+    const seen = new Set<string>();
+    for (const entry of listedAgents) {
+      const normalizedId = normalizeAgentId(entry.id);
+      if (!normalizedId) {
+        continue;
+      }
+      if (seen.has(normalizedId)) {
+        continue;
+      }
+      seen.add(normalizedId);
+      next.push({
+        id: normalizedId,
+        label: resolveAgentChoiceLabel(entry),
+      });
+    }
+    if (!seen.has(defaultAgentChoice.id)) {
+      next.unshift(defaultAgentChoice);
+    }
+    return next;
+  }, [agents, defaultAgentChoice]);
 
   useEffect(() => {
     setSessionModelOverrides((prev) => {
@@ -2100,22 +4253,33 @@ export default function App() {
       models.find((entry) => `${entry.provider}/${entry.id}` === modelId) ??
       models.find((entry) => entry.id === modelId) ??
       null;
+    const contextTokens = toFiniteNumber(currentSession?.contextTokens);
+    const inputTokens = toFiniteNumber(currentSession?.inputTokens);
+    const outputTokens = toFiniteNumber(currentSession?.outputTokens);
+    const totalTokens =
+      toFiniteNumber(currentSession?.totalTokens) ??
+      (inputTokens !== null && outputTokens !== null ? inputTokens + outputTokens : null);
+    const defaultContextTokens = toFiniteNumber(sessionDefaults?.contextTokens);
     return {
+      agentId: currentSessionAgent.id,
+      agentLabel: currentSessionAgent.label,
       modelLabel,
       modelId,
       contextLimit:
         overrideModelCatalog?.contextWindow ??
-        currentSession?.contextTokens ??
-        sessionDefaults?.contextTokens ??
+        contextTokens ??
+        defaultContextTokens ??
         null,
-      contextTokens: currentSession?.contextTokens ?? null,
-      inputTokens: currentSession?.inputTokens ?? null,
-      outputTokens: currentSession?.outputTokens ?? null,
-      totalTokens: currentSession?.totalTokens ?? null,
+      contextTokens,
+      inputTokens,
+      outputTokens,
+      totalTokens,
       thinkingLevel: overrideThinking ?? currentSession?.thinkingLevel ?? thinkingLevel,
       responseUsage: currentSession?.responseUsage ?? null,
     };
   }, [
+    currentSessionAgent.id,
+    currentSessionAgent.label,
     currentSession,
     thinkingLevel,
     sessionDefaults,
@@ -2124,6 +4288,59 @@ export default function App() {
     selectedSessionKey,
     models,
   ]);
+
+  const currentShortcutModel = useMemo(
+    () => resolveCanonicalModelFromCatalog(sessionInfo.modelId || sessionInfo.modelLabel || "", models),
+    [sessionInfo.modelId, sessionInfo.modelLabel, models],
+  );
+  const currentShortcutThinkingLevel = useMemo(
+    () => normalizeThinkingValue(sessionInfo.thinkingLevel),
+    [sessionInfo.thinkingLevel],
+  );
+
+  const modelShortcutSlots = useMemo(
+    () =>
+      Array.from({ length: MODEL_SHORTCUT_SLOT_MAX }, (_, index) => {
+        const slot = index + MODEL_SHORTCUT_SLOT_MIN;
+        const scheme = modelShortcutSchemes[String(slot)] ?? null;
+        const combo = scheme?.combo ?? getDefaultShortcutCombo(slot);
+        return {
+          slot,
+          combo,
+          shortcutLabel: resolveShortcutLabel(combo),
+          scheme,
+        };
+      }),
+    [modelShortcutSchemes],
+  );
+
+  const currentShortcutAgentId = useMemo(
+    () => currentSessionAgent.id,
+    [currentSessionAgent.id],
+  );
+  const currentShortcutAgentLabel = useMemo(
+    () => currentSessionAgent.label,
+    [currentSessionAgent.label],
+  );
+
+  const agentSessionShortcutSlots = useMemo(
+    () =>
+      Array.from({ length: AGENT_SESSION_SHORTCUT_SLOT_MAX }, (_, index) => {
+        const slot = index + AGENT_SESSION_SHORTCUT_SLOT_MIN;
+        const scheme = agentSessionShortcutSchemes[String(slot)] ?? null;
+        const combo = scheme?.combo ?? {
+          ...getDefaultAgentSessionShortcutCombo(slot),
+          key: getDefaultAgentSessionShortcutKey(slot),
+        };
+        return {
+          slot,
+          combo,
+          shortcutLabel: resolveShortcutLabel(combo),
+          scheme,
+        };
+      }),
+    [agentSessionShortcutSchemes],
+  );
 
   async function loadAgents(client: GatewayClient) {
     try {
@@ -2148,6 +4365,7 @@ export default function App() {
       try {
         const configSnapshot = await client.request("config.get", {});
         lastConfigSnapshotRef.current = configSnapshot;
+        collectRuntimePathHintsFromConfig(configSnapshot);
         configuredKeys = collectConfiguredModelKeys(configSnapshot);
       } catch {
         // ignore
@@ -2203,6 +4421,19 @@ export default function App() {
     }
   }
 
+  function refreshSessionsWithFollowUp(client: GatewayClient) {
+    clearDeferredSessionRefreshTimers();
+    const delaysMs = [260, 1100];
+    deferredSessionRefreshTimersRef.current = delaysMs.map((delayMs) =>
+      window.setTimeout(() => {
+        if (clientRef.current !== client) {
+          return;
+        }
+        void refreshSessions(client);
+      }, delayMs)
+    );
+  }
+
   async function loadHistory(client: GatewayClient, key: string, requestedLimit?: number) {
     try {
       const limit = Math.min(
@@ -2220,8 +4451,12 @@ export default function App() {
         ...historyCanLoadMoreBySessionRef.current,
         [key]: canLoadMore,
       };
-      if (selectedSessionRef.current === key) {
+      const isActiveSession = selectedSessionRef.current === key;
+      if (isActiveSession) {
         setCanLoadMoreHistory(canLoadMore);
+      }
+      if (!isActiveSession) {
+        return;
       }
       setThinkingLevel(res.thinkingLevel ?? null);
       const historyMessages: ChatMessage[] = [];
@@ -2237,10 +4472,7 @@ export default function App() {
           lastTs = inferredTs;
           const toolUpdates = extractToolUpdatesFromMessage(raw, inferredTs);
           historyTools = mergeToolItems(historyTools, toolUpdates);
-          if (isToolMessage(raw)) {
-            continue;
-          }
-          const parsed = toChatMessage(raw, inferredTs);
+          const parsed = toChatMessageSafe(raw, inferredTs);
           if (parsed) {
             historyMessages.push(parsed);
           }
@@ -2254,6 +4486,9 @@ export default function App() {
       finalizedAssistantByRunRef.current.clear();
       lastFinalizedAssistantRef.current = null;
     } catch (err) {
+      if (selectedSessionRef.current !== key) {
+        return;
+      }
       setConnectionNote(String(err));
     } finally {
       historyLoadInFlightRef.current.delete(key);
@@ -2326,22 +4561,15 @@ export default function App() {
       if (toolUpdates.length > 0) {
         setToolItems((prev) => mergeToolItems(prev, toolUpdates));
       }
-      if (isToolMessage(parsed.message)) {
-        setStreamTextSynced(null);
-        setChatRunId(null);
-        setThinking(false);
-        const client = clientRef.current;
-        if (client) {
-          void refreshSessions(client);
-        }
-        return;
-      }
+      applySessionTokenStatsFromMessage(parsed.message, parsed.sessionKey);
+      applySessionTokenStatsFromMessage(payload, parsed.sessionKey);
+      const isToolFinal = isToolMessage(parsed.message);
       const streamedText = (streamTextRef.current ?? "").trim();
-      let msg = toChatMessage(parsed.message);
-      if (msg && msg.role !== "user" && !msg.text.trim() && streamedText) {
+      let msg = toChatMessageSafe(parsed.message);
+      if (!isToolFinal && msg && msg.role !== "user" && !msg.text.trim() && streamedText) {
         msg = { ...msg, text: streamedText };
       }
-      if ((!msg || !msg.text.trim()) && streamedText) {
+      if (!isToolFinal && (!msg || !msg.text.trim()) && streamedText) {
         msg = {
           id: generateUUID(),
           role: "assistant",
@@ -2350,16 +4578,20 @@ export default function App() {
           raw: parsed.message,
         };
       }
-      if (msg && msg.text.trim() && !shouldSkipAssistantFinal(parsed.runId, msg.text)) {
-        setMessages((prev) => [...prev, msg]);
-        notifyReplyCompleted();
+      const hasRenderableAttachment = Boolean(msg?.attachments && msg.attachments.length > 0);
+      const hasRenderableText = Boolean(msg?.text.trim());
+      if (msg && (hasRenderableText || hasRenderableAttachment)) {
+        if (!hasRenderableText || !shouldSkipAssistantFinal(parsed.runId, msg.text)) {
+          setMessages((prev) => [...prev, msg]);
+          notifyReplyCompleted();
+        }
       }
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
       const client = clientRef.current;
       if (client) {
-        void refreshSessions(client);
+        refreshSessionsWithFollowUp(client);
       }
       return;
     }
@@ -2450,45 +4682,99 @@ export default function App() {
     ]);
   }
 
-  function resolveTargetAgentId(): string {
+  function resolveTargetAgentId(preferredAgentId?: string | null): string {
+    const preferred = preferredAgentId?.trim();
+    if (preferred) {
+      return resolveAgentIdWithFallback(preferred);
+    }
     if (agents?.defaultId) {
-      return agents.defaultId;
+      return resolveAgentIdWithFallback(agents.defaultId);
     }
     const current = selectedSessionRef.current;
     if (current?.startsWith("agent:")) {
       const parts = current.split(":");
       if (parts.length > 1 && parts[1]) {
-        return parts[1];
+        return resolveAgentIdWithFallback(parts[1]);
       }
     }
     return "main";
   }
 
-  async function createSession(labelInput: string, closeModal: boolean): Promise<string | null> {
+  async function createSession(
+    labelInput: string,
+    closeModal: boolean,
+    preferredAgentId?: string | null,
+  ): Promise<string | null> {
     const client = clientRef.current;
     if (!client) {
       return null;
     }
     const label = resolveSessionLabel(labelInput);
     const slug = slugify(label) || "session";
-    const agentId = resolveTargetAgentId();
+    const agentId = resolveTargetAgentId(preferredAgentId);
     const key = `agent:${agentId}:ui:${slug}-${generateUUID().slice(0, 8)}`;
+    const primarySessionKey = resolvePrimarySessionKey(agents, lastConfigSnapshotRef.current);
+    const previousSelectedKey = selectedSessionRef.current;
+    pendingSessionCreatesRef.current.add(key);
+    setSessions((prev) => {
+      const nextSession: GatewaySessionRow = {
+        key,
+        kind: "direct",
+        label,
+        derivedTitle: label,
+        lastMessagePreview: "",
+        updatedAt: Date.now(),
+      };
+      const withoutDuplicate = prev.filter((session) => session.key !== key);
+      const primaryIndex = withoutDuplicate.findIndex(
+        (session) => session.key.toLowerCase() === primarySessionKey,
+      );
+      if (primaryIndex < 0) {
+        return [nextSession, ...withoutDuplicate];
+      }
+      const next = [...withoutDuplicate];
+      next.splice(primaryIndex + 1, 0, nextSession);
+      return next;
+    });
+    setSelectedSessionKey(key);
+    setMessages([]);
+    setToolItems([]);
+    setStreamTextSynced(null);
+    setChatRunId(null);
+    setThinking(false);
+    setThinkingLevel(null);
+    setHistoryLimit(key, CHAT_HISTORY_INITIAL_LIMIT);
+    historyCanLoadMoreBySessionRef.current = {
+      ...historyCanLoadMoreBySessionRef.current,
+      [key]: false,
+    };
+    setCanLoadMoreHistory(false);
     try {
       await client.request("sessions.patch", { key, label });
-      setSelectedSessionKey(key);
       if (closeModal) {
         setShowNewSession(false);
       }
-      setHistoryLimit(key, CHAT_HISTORY_INITIAL_LIMIT);
-      historyCanLoadMoreBySessionRef.current = {
-        ...historyCanLoadMoreBySessionRef.current,
-        [key]: false,
-      };
-      setCanLoadMoreHistory(false);
-      await refreshSessions(client);
-      await loadHistory(client, key, CHAT_HISTORY_INITIAL_LIMIT);
+      pendingSessionCreatesRef.current.delete(key);
+      if (selectedSessionRef.current === key) {
+        setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[key] ?? false);
+        void loadHistory(client, key, getHistoryLimit(key));
+      }
+      void refreshSessions(client);
       return key;
     } catch (err) {
+      pendingSessionCreatesRef.current.delete(key);
+      setSessions((prev) => prev.filter((session) => session.key !== key));
+      setSelectedSessionKey((prev) => (prev === key ? previousSelectedKey : prev));
+      const nextHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
+      delete nextHistoryCanLoadMore[key];
+      historyCanLoadMoreBySessionRef.current = nextHistoryCanLoadMore;
+      const nextHistoryLimit = { ...historyLimitBySessionRef.current };
+      delete nextHistoryLimit[key];
+      historyLimitBySessionRef.current = nextHistoryLimit;
+      if (previousSelectedKey) {
+        setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[previousSelectedKey] ?? false);
+        void loadHistory(client, previousSelectedKey, getHistoryLimit(previousSelectedKey));
+      }
       pushSystemMessage(`Create failed: ${String(err)}`);
       return null;
     }
@@ -2496,7 +4782,26 @@ export default function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || !event.metaKey || event.altKey || event.ctrlKey) {
+      if (event.defaultPrevented) {
+        return;
+      }
+      const matchedModelScheme = Object.values(modelShortcutSchemes).find(
+        (entry) => entry && isShortcutComboEventMatch(entry.combo, event),
+      );
+      if (matchedModelScheme) {
+        event.preventDefault();
+        void applyModelShortcutScheme(matchedModelScheme, "shortcut");
+        return;
+      }
+      const matchedAgentScheme = Object.values(agentSessionShortcutSchemes).find(
+        (entry) => entry && isShortcutComboEventMatch(entry.combo, event),
+      );
+      if (matchedAgentScheme) {
+        event.preventDefault();
+        void handleApplyAgentSessionShortcutScheme(matchedAgentScheme.slot, "shortcut");
+        return;
+      }
+      if (!event.metaKey || event.altKey || event.ctrlKey) {
         return;
       }
       const key = event.key.toLowerCase();
@@ -2512,7 +4817,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [agents, connected]);
+  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes]);
 
   function buildStatusCard(statusPayload: unknown, configSnapshot: unknown): string {
     const statusRoot: Record<string, unknown> =
@@ -2554,29 +4859,38 @@ export default function App() {
         ? modelLabel.split("/")[0] ?? null
         : currentSession?.modelProvider ?? null;
     const authLabel = resolveProviderApiKeyLabel(configSnapshot, provider);
+    const currentInputTokens = toFiniteNumber(currentSession?.inputTokens);
+    const currentOutputTokens = toFiniteNumber(currentSession?.outputTokens);
+    const currentTotalTokens =
+      toFiniteNumber(currentSession?.totalTokens) ??
+      (currentInputTokens !== null && currentOutputTokens !== null
+        ? currentInputTokens + currentOutputTokens
+        : null);
+    const currentContextTokens = toFiniteNumber(currentSession?.contextTokens);
+    const defaultContextTokens = defaults ? getNumberLike(defaults, ["contextTokens", "context_tokens"]) : null;
 
     const inputTokens =
-      (statusSession ? getNumber(statusSession, ["inputTokens"]) : null) ??
-      currentSession?.inputTokens ??
+      (statusSession ? getNumberLike(statusSession, ["inputTokens", "input_tokens"]) : null) ??
+      currentInputTokens ??
       sessionInfo.inputTokens ??
       null;
     const outputTokens =
-      (statusSession ? getNumber(statusSession, ["outputTokens"]) : null) ??
-      currentSession?.outputTokens ??
+      (statusSession ? getNumberLike(statusSession, ["outputTokens", "output_tokens"]) : null) ??
+      currentOutputTokens ??
       sessionInfo.outputTokens ??
       null;
     const contextUsed =
-      (statusSession ? getNumber(statusSession, ["totalTokens"]) : null) ??
-      currentSession?.totalTokens ??
-      currentSession?.inputTokens ??
+      (statusSession ? getNumberLike(statusSession, ["totalTokens", "total_tokens"]) : null) ??
+      currentTotalTokens ??
+      currentInputTokens ??
       sessionInfo.totalTokens ??
       sessionInfo.inputTokens ??
       null;
     const contextLimit =
-      (statusSession ? getNumber(statusSession, ["contextTokens"]) : null) ??
-      currentSession?.contextTokens ??
+      (statusSession ? getNumberLike(statusSession, ["contextTokens", "context_tokens"]) : null) ??
+      currentContextTokens ??
       sessionInfo.contextLimit ??
-      (defaults ? getNumber(defaults, ["contextTokens"]) : null) ??
+      defaultContextTokens ??
       null;
     const contextPercent =
       Number.isFinite(contextUsed) && Number.isFinite(contextLimit) && (contextLimit as number) > 0
@@ -2585,15 +4899,16 @@ export default function App() {
             Math.min(999, Math.round(((contextUsed as number) / (contextLimit as number)) * 100)),
           )
         : null;
-    const compactions = statusSession ? getNumber(statusSession, ["compactionCount"]) ?? 0 : 0;
+    const compactions =
+      statusSession ? getNumberLike(statusSession, ["compactionCount", "compaction_count"]) ?? 0 : 0;
     const sessionKeyForLine =
       (statusSession ? getString(statusSession, ["key"]) : null) ??
       activeKey ??
       currentSession?.key ??
       "unknown";
     const updatedAt =
-      (statusSession ? getNumber(statusSession, ["updatedAt"]) : null) ??
-      currentSession?.updatedAt ??
+      (statusSession ? getNumberLike(statusSession, ["updatedAt", "updated_at"]) : null) ??
+      toFiniteNumber(currentSession?.updatedAt) ??
       null;
     const runtime =
       (statusSession ? getString(statusSession, ["kind"]) : null) ??
@@ -2779,7 +5094,6 @@ export default function App() {
     setChatRunId(runId);
     setThinking(true);
     setStreamTextSynced("");
-    setToolItems([]);
 
     try {
       const sendRes = (await client.request("chat.send", {
@@ -2824,6 +5138,7 @@ export default function App() {
             client.request("status", {}),
             client.request("config.get", {}).catch(() => null),
           ]);
+          collectRuntimePathHintsFromConfig(configSnapshot);
           pushSystemMessage(buildStatusCard(statusRes, configSnapshot));
           break;
         }
@@ -2836,12 +5151,28 @@ export default function App() {
           break;
         }
         case "compact": {
-          const maxLines = Number.parseInt(args || "", 10);
-          await client.request("sessions.compact", {
-            key: selectedSessionKey,
-            maxLines: Number.isFinite(maxLines) ? maxLines : undefined,
-          });
-          pushSystemMessage("session compact requested");
+          const normalizedArgs = args.trim();
+          const commandText = normalizedArgs ? `/compact ${normalizedArgs}` : "/compact";
+          const runId = generateUUID();
+          chatRunRef.current = runId;
+          setChatRunId(runId);
+          setThinking(true);
+          setStreamTextSynced("");
+          pushSystemMessage("running /compact...");
+          const sendRes = (await client.request("chat.send", {
+            sessionKey: selectedSessionKey,
+            message: commandText,
+            deliver: false,
+            idempotencyKey: runId,
+          })) as { runId?: unknown };
+          const ackRunId =
+            typeof sendRes?.runId === "string" && sendRes.runId.trim()
+              ? sendRes.runId.trim()
+              : null;
+          if (ackRunId && ackRunId !== chatRunRef.current) {
+            chatRunRef.current = ackRunId;
+            setChatRunId(ackRunId);
+          }
           break;
         }
         case "model": {
@@ -2965,8 +5296,8 @@ export default function App() {
     }
   }
 
-  async function handleCreateSession(label: string) {
-    await createSession(label, true);
+  async function handleCreateSession(label: string, agentId?: string | null) {
+    await createSession(label, true, agentId);
   }
 
   async function handleLoadMoreSessions() {
@@ -3016,6 +5347,9 @@ export default function App() {
     if (!client) {
       return;
     }
+    if (deletingSessionKeyRef.current) {
+      return;
+    }
     if (!options?.skipConfirm && typeof window !== "undefined") {
       const target = sessions.find((session) => session.key === key);
       const label = target?.label ?? target?.derivedTitle ?? key;
@@ -3024,15 +5358,49 @@ export default function App() {
         return;
       }
     }
+    deletingSessionKeyRef.current = key;
+    setDeletingSessionKey(key);
+    const sessionsBeforeDelete = sessionsRef.current;
+    const wasSelected = selectedSessionRef.current === key;
+    const nextSelectedKey = wasSelected
+      ? sessionsBeforeDelete.find((session) => session.key !== key)?.key ?? null
+      : selectedSessionRef.current;
+    const previousHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
+    const previousHistoryLimit = { ...historyLimitBySessionRef.current };
+    const nextHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
+    delete nextHistoryCanLoadMore[key];
+    historyCanLoadMoreBySessionRef.current = nextHistoryCanLoadMore;
+    const nextHistoryLimit = { ...historyLimitBySessionRef.current };
+    delete nextHistoryLimit[key];
+    historyLimitBySessionRef.current = nextHistoryLimit;
+    setSessions((prev) => prev.filter((session) => session.key !== key));
+    setSessionModelOverrides((prev) => clearOverride(prev, key));
+    setSessionThinkingOverrides((prev) => clearOverride(prev, key));
+    if (wasSelected) {
+      setSelectedSessionKey(nextSelectedKey);
+      if (!nextSelectedKey) {
+        setMessages([]);
+        setToolItems([]);
+        setStreamTextSynced(null);
+        setChatRunId(null);
+        setThinking(false);
+        setCanLoadMoreHistory(false);
+      }
+    }
     try {
       await client.request("sessions.delete", { key });
-      await refreshSessions(client);
-      if (selectedSessionKey === key) {
-        const next = sessions.find((session) => session.key !== key)?.key || null;
-        setSelectedSessionKey(next);
-      }
+      refreshSessionsWithFollowUp(client);
     } catch (err) {
+      historyCanLoadMoreBySessionRef.current = previousHistoryCanLoadMore;
+      historyLimitBySessionRef.current = previousHistoryLimit;
+      setSessions(sessionsBeforeDelete);
+      if (wasSelected) {
+        setSelectedSessionKey(key);
+      }
       pushSystemMessage(`Delete failed: ${String(err)}`);
+    } finally {
+      deletingSessionKeyRef.current = null;
+      setDeletingSessionKey((previousKey) => (previousKey === key ? null : previousKey));
     }
   }
 
@@ -3100,6 +5468,7 @@ export default function App() {
         selectedKey={selectedSessionKey}
         collapsed={sidebarCollapsed}
         sidebarWidth={uiSettings.sidebarWidth}
+        deletingKey={deletingSessionKey}
         onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
         onSelect={(key) => setSelectedSessionKey(key)}
         onCreate={() => setShowNewSession(true)}
@@ -3134,6 +5503,8 @@ export default function App() {
           onThinkingSelect={(level) => void handleSelectThinking(level)}
           onCreateSession={() => setShowNewSession(true)}
           onOpenSettings={() => setShowSettings(true)}
+          onResolveRemoteImage={resolveRemoteImage}
+          onCompact={() => void handleSlashCommand("/compact")}
         />
       </div>
 
@@ -3158,13 +5529,32 @@ export default function App() {
         onSaveUiSettingsScheme={handleSaveUiSettingsScheme}
         onOverwriteUiSettingsScheme={handleOverwriteUiSettingsScheme}
         onDeleteUiSettingsScheme={handleDeleteUiSettingsScheme}
+        modelShortcutSchemes={modelShortcutSlots}
+        currentModelForShortcut={currentShortcutModel}
+        currentThinkingForShortcut={currentShortcutThinkingLevel}
+        onSaveModelShortcutScheme={handleSaveModelShortcutScheme}
+        onApplyModelShortcutScheme={(slot) => void handleApplyModelShortcutScheme(slot, "manual")}
+        onChangeModelShortcutSchemeCombo={handleChangeModelShortcutSchemeCombo}
+        onDeleteModelShortcutScheme={handleClearModelShortcutScheme}
         onPreviewReplyDoneSound={previewReplyDoneSound}
+        agentSessionShortcutSchemes={agentSessionShortcutSlots}
+        currentAgentIdForShortcut={currentShortcutAgentId}
+        currentAgentLabelForShortcut={currentShortcutAgentLabel}
+        onSaveAgentSessionShortcutScheme={handleSaveAgentSessionShortcutScheme}
+        onApplyAgentSessionShortcutScheme={(slot) =>
+          void handleApplyAgentSessionShortcutScheme(slot, "manual")
+        }
+        onChangeAgentSessionShortcutSchemeCombo={handleChangeAgentSessionShortcutSchemeCombo}
+        onDeleteAgentSessionShortcutScheme={handleClearAgentSessionShortcutScheme}
       />
 
       <NewSessionModal
         open={showNewSession}
         onClose={() => setShowNewSession(false)}
         onCreate={handleCreateSession}
+        agentOptions={newSessionAgentChoices}
+        defaultAgentId={defaultAgentChoice.id}
+        defaultAgentLabel={defaultAgentChoice.label}
       />
     </div>
   );

@@ -42,6 +42,7 @@ export type GatewayHelloOk = {
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: unknown) => void;
+  timeoutHandle: number | null;
 };
 
 export type GatewayClientOptions = {
@@ -183,6 +184,9 @@ export class GatewayClient {
 
   private flushPending(err: Error) {
     for (const [, p] of this.pending) {
+      if (p.timeoutHandle !== null) {
+        window.clearTimeout(p.timeoutHandle);
+      }
       p.reject(err);
     }
     this.pending.clear();
@@ -340,6 +344,9 @@ export class GatewayClient {
         return;
       }
       this.pending.delete(res.id);
+      if (pending.timeoutHandle !== null) {
+        window.clearTimeout(pending.timeoutHandle);
+      }
       if (res.ok) {
         pending.resolve(res.payload);
       } else {
@@ -357,14 +364,37 @@ export class GatewayClient {
     );
   }
 
-  request<T = unknown>(method: string, params?: unknown): Promise<T> {
+  request<T = unknown>(
+    method: string,
+    params?: unknown,
+    options?: { timeoutMs?: number },
+  ): Promise<T> {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       return Promise.reject(new Error("gateway not connected"));
     }
     const id = generateUUID();
     const frame = { type: "req", id, method, params };
+    const timeoutMs =
+      typeof options?.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
+        ? Math.max(0, Math.floor(options.timeoutMs))
+        : 0;
     const p = new Promise<T>((resolve, reject) => {
-      this.pending.set(id, { resolve: (v) => resolve(v as T), reject });
+      const pending: Pending = {
+        resolve: (v) => resolve(v as T),
+        reject,
+        timeoutHandle: null,
+      };
+      if (timeoutMs > 0) {
+        pending.timeoutHandle = window.setTimeout(() => {
+          const active = this.pending.get(id);
+          if (active !== pending) {
+            return;
+          }
+          this.pending.delete(id);
+          reject(new Error(`${method} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }
+      this.pending.set(id, pending);
     });
     this.ws.send(JSON.stringify(frame));
     return p;

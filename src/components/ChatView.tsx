@@ -6,6 +6,8 @@ import { BASE_COMMANDS, type SlashCommand } from "../lib/slash-commands.ts";
 import type { UiSettings } from "../lib/ui-settings.ts";
 
 export type SessionInfo = {
+  agentId: string;
+  agentLabel: string;
   modelLabel: string;
   modelId: string;
   contextLimit: number | null;
@@ -42,10 +44,13 @@ type ChatViewProps = {
   onThinkingSelect: (level: string) => void;
   onCreateSession: () => void;
   onOpenSettings: () => void;
+  onResolveRemoteImage?: (filePath: string) => Promise<string | null>;
+  onCompact?: () => void;
 };
 
 const MESSAGE_RENDER_STEP = 60;
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 10;
+const DESKTOP_LOCAL_IMAGE_SCHEME = "claw-local-image";
 
 function attachmentLabel(att: Attachment): string {
   return `${att.name} (${formatBytes(att.size)})`;
@@ -71,6 +76,781 @@ function formatLocalDateTime(timestamp: number): string {
   return `${year}-${month}-${day} ${hour}:${minute}:${second}`;
 }
 
+function filePathFromFileUrl(value: string): string | null {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "file:") {
+      return null;
+    }
+    let pathname = decodeURIComponent(parsed.pathname || "");
+    if (!pathname) {
+      return null;
+    }
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    return pathname;
+  } catch {
+    return null;
+  }
+}
+
+function stripPathDecorators(value: string): string {
+  let next = value.trim();
+  next = next.replace(/^media\s*:\s*/i, "").trim();
+  if (!next) {
+    return "";
+  }
+  const wrappers: Array<[string, string]> = [
+    ['"', '"'],
+    ["'", "'"],
+    ["`", "`"],
+    ["<", ">"],
+    ["(", ")"],
+    ["[", "]"],
+  ];
+  for (const [left, right] of wrappers) {
+    if (next.startsWith(left) && next.endsWith(right) && next.length >= 2) {
+      next = next.slice(1, -1).trim();
+    }
+  }
+  return next.trim();
+}
+
+function looksLikeImagePath(value: string): boolean {
+  const noQuery = value.split("?")[0]?.split("#")[0]?.trim() ?? "";
+  if (!noQuery) {
+    return false;
+  }
+  return /\.(png|jpe?g|webp|gif|bmp|svg)$/i.test(noQuery);
+}
+
+function looksLikeAbsoluteImagePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (
+    trimmed.startsWith(".openclaw/workspace/") ||
+    trimmed.startsWith("openclaw/workspace/") ||
+    trimmed.includes("/.openclaw/workspace/")
+  ) {
+    return true;
+  }
+  if (!looksLikeImagePath(trimmed)) {
+    return false;
+  }
+  return /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("/") || trimmed.startsWith("~/");
+}
+
+function resolveWorkspaceRelativeLocalPath(value: string): string | null {
+  const trimmed = value.trim().replace(/^\.\/+/, "").replace(/^\/+/, "");
+  if (!trimmed || !looksLikeImagePath(trimmed)) {
+    return null;
+  }
+  const workspaceDir = window.desktopInfo?.workspaceDir?.trim();
+  if (!workspaceDir) {
+    return null;
+  }
+  return `${workspaceDir}/${trimmed}`;
+}
+
+function mapWorkspaceAliasToLocalPath(value: string): string | null {
+  const trimmed = value.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  const homeDir = window.desktopInfo?.homeDir?.trim();
+  if (!trimmed || !homeDir) {
+    return null;
+  }
+  if (trimmed.startsWith(".openclaw/workspace/")) {
+    return `${homeDir}/${trimmed}`;
+  }
+  if (trimmed.startsWith("openclaw/workspace/")) {
+    return `${homeDir}/.${trimmed}`;
+  }
+  return null;
+}
+
+function isLikelyPathOrUrl(value: string): boolean {
+  const trimmed = stripPathDecorators(value);
+  if (!trimmed) {
+    return false;
+  }
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith("//")) {
+    return true;
+  }
+  if (trimmed.toLowerCase().includes("__claw/local-image")) {
+    return true;
+  }
+  if (
+    /^[A-Za-z]:[\\/]/.test(trimmed) ||
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("~/") ||
+    trimmed.startsWith(".openclaw/workspace/") ||
+    trimmed.startsWith("openclaw/workspace/")
+  ) {
+    return true;
+  }
+  return looksLikeImagePath(trimmed);
+}
+
+function decodeCompactBase64AsUtf8(value: string): string | null {
+  const compact = value.replace(/\s+/g, "").trim();
+  if (!compact || compact.length > 32768) {
+    return null;
+  }
+  const normalized = compact.replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/]+=*$/.test(normalized)) {
+    return null;
+  }
+  const remainder = normalized.length % 4;
+  if (remainder === 1) {
+    return null;
+  }
+  const padded = remainder === 0 ? normalized : `${normalized}${"=".repeat(4 - remainder)}`;
+  try {
+    const binary = atob(padded);
+    if (!binary) {
+      return null;
+    }
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const decodedRaw = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+    const printableCount = decodedRaw.split("").filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code === 9 || code === 10 || code === 13 || (code >= 32 && code <= 126);
+    }).length;
+    if (decodedRaw.length === 0 || printableCount / decodedRaw.length < 0.75) {
+      return null;
+    }
+    const decoded = decodedRaw.trim();
+    if (!decoded || decoded.length > 2048) {
+      return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeDataImageUrl(value: string): string | null {
+  const trimmed = value.trim();
+  const match = /^data:(image\/[a-z0-9.+-]+)(?:;[a-z0-9.+-]+=[^;,]+)*;base64,([\s\S]+)$/i.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+  const mimeType = match[1].toLowerCase();
+  const payloadRaw = match[2] ?? "";
+  const payloadVariants = [payloadRaw];
+  if (payloadRaw.includes("%")) {
+    try {
+      const decoded = decodeURIComponent(payloadRaw);
+      if (decoded && decoded !== payloadRaw) {
+        payloadVariants.push(decoded);
+      }
+    } catch {
+      // keep raw payload only
+    }
+  }
+  for (const payloadVariant of payloadVariants) {
+    const payloadCompact = payloadVariant.replace(/\s+/g, "");
+    if (!payloadCompact) {
+      continue;
+    }
+    const payloadNormalized = payloadCompact.replace(/-/g, "+").replace(/_/g, "/");
+    if (!/^[A-Za-z0-9+/]+=*$/.test(payloadNormalized)) {
+      continue;
+    }
+    const remainder = payloadNormalized.length % 4;
+    if (remainder === 1) {
+      continue;
+    }
+    const padded =
+      remainder === 0 ? payloadNormalized : `${payloadNormalized}${"=".repeat(4 - remainder)}`;
+    return `data:${mimeType};base64,${padded}`;
+  }
+  return null;
+}
+
+function summarizeSourceForError(value: string): string {
+  const trimmed = stripPathDecorators(value).replace(/\s+/g, " ").trim();
+  if (!trimmed) {
+    return "empty";
+  }
+  if (trimmed.toLowerCase().startsWith("data:image/")) {
+    const payload = /^data:image\/[^;]+;base64,([\s\S]+)$/i.exec(trimmed)?.[1] ?? "";
+    const compact = payload.replace(/\s+/g, "");
+    return `data-len-${compact.length}`;
+  }
+  if (trimmed.length <= 64) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 64)}...`;
+}
+
+function extractImageSourceCandidates(value: string): string[] {
+  const initial = stripPathDecorators(value);
+  if (!initial) {
+    return [];
+  }
+  const seen = new Set<string>();
+  const candidates: string[] = [];
+  const push = (raw: string) => {
+    const next = stripPathDecorators(raw);
+    if (!next || seen.has(next)) {
+      return;
+    }
+    seen.add(next);
+    candidates.push(next);
+  };
+  const tryExtractFromText = (text: string) => {
+    const candidate = stripPathDecorators(text);
+    if (!candidate) {
+      return;
+    }
+    if (isLikelyPathOrUrl(candidate)) {
+      push(candidate);
+    }
+    try {
+      const decoded = decodeURIComponent(candidate);
+      if (decoded && decoded !== candidate && isLikelyPathOrUrl(decoded)) {
+        push(decoded);
+      }
+    } catch {
+      // ignore
+    }
+    const maybeJson = candidate.trim();
+    if (!maybeJson.startsWith("{") && !maybeJson.startsWith("[")) {
+      return;
+    }
+    try {
+      const parsed = JSON.parse(maybeJson) as unknown;
+      const queue: Array<{ value: unknown; depth: number }> = [{ value: parsed, depth: 0 }];
+      let traversed = 0;
+      while (queue.length > 0 && traversed < 220) {
+        const current = queue.shift();
+        if (!current) {
+          continue;
+        }
+        traversed += 1;
+        if (typeof current.value === "string") {
+          const textValue = stripPathDecorators(current.value);
+          if (textValue && isLikelyPathOrUrl(textValue)) {
+            push(textValue);
+          }
+          continue;
+        }
+        if (!current.value || current.depth >= 6) {
+          continue;
+        }
+        if (Array.isArray(current.value)) {
+          for (const nested of current.value) {
+            queue.push({ value: nested, depth: current.depth + 1 });
+          }
+          continue;
+        }
+        if (typeof current.value === "object") {
+          for (const nested of Object.values(current.value as Record<string, unknown>)) {
+            if (typeof nested === "string" || Array.isArray(nested) || (nested && typeof nested === "object")) {
+              queue.push({ value: nested, depth: current.depth + 1 });
+            }
+          }
+        }
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  push(initial);
+  tryExtractFromText(initial);
+  try {
+    const decoded = decodeURIComponent(initial);
+    if (decoded && decoded !== initial) {
+      push(decoded);
+      tryExtractFromText(decoded);
+    }
+  } catch {
+    // ignore
+  }
+
+  const dataUrlPayload = /^data:image\/[^;]+;base64,([^,\s]+)$/i.exec(initial)?.[1]?.trim() ?? "";
+  if (dataUrlPayload) {
+    push(dataUrlPayload);
+    try {
+      const decodedPayload = decodeURIComponent(dataUrlPayload);
+      if (decodedPayload && decodedPayload !== dataUrlPayload) {
+        push(decodedPayload);
+      }
+      const decodedPayloadText = decodeCompactBase64AsUtf8(decodedPayload);
+      if (decodedPayloadText && isLikelyPathOrUrl(decodedPayloadText)) {
+        push(decodedPayloadText);
+        tryExtractFromText(decodedPayloadText);
+      }
+    } catch {
+      // ignore
+    }
+    const decodedPayloadText = decodeCompactBase64AsUtf8(dataUrlPayload);
+    if (decodedPayloadText && isLikelyPathOrUrl(decodedPayloadText)) {
+      push(decodedPayloadText);
+      tryExtractFromText(decodedPayloadText);
+    }
+  }
+
+  const initialDecodedText = decodeCompactBase64AsUtf8(initial);
+  if (initialDecodedText && isLikelyPathOrUrl(initialDecodedText)) {
+    push(initialDecodedText);
+    tryExtractFromText(initialDecodedText);
+  }
+
+  return candidates;
+}
+
+function buildDesktopLocalImageUrl(filePath: string): string {
+  return `${DESKTOP_LOCAL_IMAGE_SCHEME}://open?path=${encodeURIComponent(filePath)}`;
+}
+
+function localPathFromDesktopLocalImageUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== `${DESKTOP_LOCAL_IMAGE_SCHEME}:`) {
+      return null;
+    }
+    const rawPath = parsed.searchParams.get("path");
+    if (rawPath) {
+      return decodeURIComponent(rawPath);
+    }
+    let pathname = decodeURIComponent(parsed.pathname || "");
+    if (/^\/[A-Za-z]:\//.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    return pathname || null;
+  } catch {
+    return null;
+  }
+}
+
+function filePathFromImageSource(value: string): string | null {
+  const trimmed = stripPathDecorators(value);
+  if (!trimmed) {
+    return null;
+  }
+  const fromDesktopLocalImage = localPathFromDesktopLocalImageUrl(trimmed);
+  if (fromDesktopLocalImage) {
+    return fromDesktopLocalImage;
+  }
+  const dataUrlPayload = /^data:image\/[^;]+;base64,([^,\s]+)$/i.exec(trimmed)?.[1]?.trim() ?? "";
+  if (dataUrlPayload) {
+    let decodedPayload = dataUrlPayload;
+    try {
+      decodedPayload = decodeURIComponent(dataUrlPayload);
+    } catch {
+      // keep raw payload
+    }
+    const cleanedPayload = stripPathDecorators(decodedPayload);
+    const mappedFromAlias = mapWorkspaceAliasToLocalPath(cleanedPayload);
+    if (mappedFromAlias) {
+      return mappedFromAlias;
+    }
+    if (looksLikeAbsoluteImagePath(cleanedPayload)) {
+      return cleanedPayload;
+    }
+    const workspaceRelativePayload = resolveWorkspaceRelativeLocalPath(cleanedPayload);
+    if (workspaceRelativePayload) {
+      return workspaceRelativePayload;
+    }
+  }
+  if (/^file:\/\/\/__claw\/local-image\?/i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      const rawPath = parsed.searchParams.get("path");
+      if (!rawPath) {
+        return null;
+      }
+      return decodeURIComponent(rawPath);
+    } catch {
+      return null;
+    }
+  }
+  if (trimmed.toLowerCase().includes("__claw/local-image")) {
+    const marker = "__claw/local-image?";
+    const parsePath = (raw: string | null): string | null => {
+      if (!raw) {
+        return null;
+      }
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw;
+      }
+    };
+    const normalized = trimmed.toLowerCase();
+    if (normalized.startsWith(marker)) {
+      return parsePath(new URLSearchParams(trimmed.slice(marker.length)).get("path"));
+    }
+    const markerIndex = normalized.indexOf(marker);
+    if (markerIndex >= 0) {
+      return parsePath(new URLSearchParams(trimmed.slice(markerIndex + marker.length)).get("path"));
+    }
+    try {
+      const parsed = new URL(trimmed, "http://127.0.0.1");
+      return parsePath(parsed.searchParams.get("path"));
+    } catch {
+      return null;
+    }
+  }
+  const fromFileUrl = filePathFromFileUrl(trimmed);
+  if (fromFileUrl) {
+    return fromFileUrl;
+  }
+  const mappedFromAlias = mapWorkspaceAliasToLocalPath(trimmed);
+  if (mappedFromAlias) {
+    return mappedFromAlias;
+  }
+  if (trimmed.startsWith("~/")) {
+    const homeDir = window.desktopInfo?.homeDir?.trim();
+    if (homeDir) {
+      return `${homeDir}/${trimmed.slice(2)}`;
+    }
+    return trimmed;
+  }
+  const workspaceRelativePath = resolveWorkspaceRelativeLocalPath(trimmed);
+  if (workspaceRelativePath) {
+    return workspaceRelativePath;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith("/")) {
+    try {
+      const strippedQuery = trimmed.split("?")[0]?.split("#")[0] ?? trimmed;
+      return decodeURIComponent(strippedQuery);
+    } catch {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+function normalizeHttpImageUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  if (trimmed.startsWith("//")) {
+    const protocol = window.location.protocol === "https:" ? "https:" : "http:";
+    return `${protocol}${trimmed}`;
+  }
+  return null;
+}
+
+function toDesktopRenderableSrc(value: string): string {
+  if (!isDesktopRuntime()) {
+    return value;
+  }
+  const path = filePathFromImageSource(value);
+  if (!path) {
+    return value;
+  }
+  return buildDesktopLocalImageUrl(path);
+}
+
+function isDesktopRuntime(): boolean {
+  if (window.desktopInfo?.isDesktop) {
+    return true;
+  }
+  return window.location.protocol === "file:";
+}
+
+function isLikelyLocalFileSource(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (trimmed.toLowerCase().startsWith(`${DESKTOP_LOCAL_IMAGE_SCHEME}:`)) {
+    return true;
+  }
+  if (/^file:/i.test(trimmed)) {
+    return true;
+  }
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) {
+    return true;
+  }
+  if (
+    /^\/(?:home|users|tmp|var|private|mnt|volumes)\//i.test(trimmed) ||
+    trimmed.startsWith("~/") ||
+    trimmed.startsWith("\\\\")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function MessageImageAttachment(props: {
+  attachment: Attachment;
+  onOpen: (attachment: Attachment) => void;
+  resolveRemoteImage?: (filePath: string) => Promise<string | null>;
+}) {
+  const [resolvedSrc, setResolvedSrc] = useState(toDesktopRenderableSrc(props.attachment.dataUrl));
+  const [failedToLoad, setFailedToLoad] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const desktopReadImageFile = window.desktopInfo?.readImageFile;
+  const desktopFetchImageUrl = window.desktopInfo?.fetchImageUrl;
+  const localPathCandidate = filePathFromImageSource(resolvedSrc || props.attachment.dataUrl);
+  const usesDesktopLocalScheme = resolvedSrc.trim().toLowerCase().startsWith(`${DESKTOP_LOCAL_IMAGE_SCHEME}:`);
+  const requiresDesktopDecode =
+    isDesktopRuntime() &&
+    typeof desktopReadImageFile === "function" &&
+    Boolean(localPathCandidate) &&
+    !usesDesktopLocalScheme;
+  const desktopBridgeMissing =
+    isDesktopRuntime() && typeof desktopReadImageFile !== "function";
+  const webLocalFileBlocked = !isDesktopRuntime() && isLikelyLocalFileSource(resolvedSrc);
+  const desktopResolveTriedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setResolvedSrc(toDesktopRenderableSrc(props.attachment.dataUrl));
+    setFailedToLoad(false);
+    setLoadError(null);
+  }, [props.attachment.dataUrl]);
+
+  const tryResolveLocalImage = useCallback(async (): Promise<Attachment | null> => {
+    const sourceValue = (resolvedSrc || props.attachment.dataUrl).trim();
+    const sourceCandidates = extractImageSourceCandidates(sourceValue);
+    const sourceKind = sourceValue.toLowerCase().startsWith("data:image/")
+      ? "data-url"
+      : sourceValue.toLowerCase().startsWith("http:")
+      ? "http-url"
+      : sourceValue.toLowerCase().startsWith("https:")
+      ? "https-url"
+      : sourceValue.toLowerCase().startsWith("file:")
+      ? "file-url"
+      : sourceValue.toLowerCase().includes("__claw/local-image")
+      ? "proxy-url"
+      : "raw";
+    let filePath: string | null = null;
+    for (const candidate of sourceCandidates) {
+      filePath = filePathFromImageSource(candidate);
+      if (filePath) {
+        break;
+      }
+    }
+    if (!filePath) {
+      if (sourceKind === "data-url") {
+        for (const candidate of sourceCandidates) {
+          const normalizedDataUrl = normalizeDataImageUrl(candidate);
+          if (normalizedDataUrl && normalizedDataUrl !== sourceValue) {
+            setResolvedSrc(normalizedDataUrl);
+            setFailedToLoad(false);
+            setLoadError(null);
+            return {
+              ...props.attachment,
+              dataUrl: normalizedDataUrl,
+            };
+          }
+        }
+        setFailedToLoad(true);
+        setLoadError(`img-decode-failed:${sourceKind}:${summarizeSourceForError(sourceValue)}`);
+        return null;
+      }
+      let remoteUrl: string | null = null;
+      for (const candidate of sourceCandidates) {
+        remoteUrl = normalizeHttpImageUrl(candidate);
+        if (remoteUrl) {
+          break;
+        }
+      }
+      if (remoteUrl && typeof desktopFetchImageUrl === "function") {
+        try {
+          const fetched = await desktopFetchImageUrl(remoteUrl);
+          const nextDataUrl =
+            fetched?.ok && typeof fetched.dataUrl === "string" ? fetched.dataUrl.trim() : "";
+          if (nextDataUrl) {
+            setResolvedSrc(nextDataUrl);
+            setFailedToLoad(false);
+            setLoadError(null);
+            return {
+              ...props.attachment,
+              dataUrl: nextDataUrl,
+            };
+          }
+          setFailedToLoad(true);
+          setLoadError(fetched?.error ?? "remote-fetch-failed");
+          return null;
+        } catch {
+          setFailedToLoad(true);
+          setLoadError("remote-fetch-failed");
+          return null;
+        }
+      }
+      setFailedToLoad(true);
+      setLoadError(`path-parse-failed:${sourceKind}:${summarizeSourceForError(sourceValue)}`);
+      return null;
+    }
+    const tryResolveRemote = async (): Promise<Attachment | null> => {
+      if (!props.resolveRemoteImage) {
+        return null;
+      }
+      const remoteDataUrl = await props.resolveRemoteImage(filePath);
+      const nextDataUrl = typeof remoteDataUrl === "string" ? remoteDataUrl.trim() : "";
+      if (!nextDataUrl) {
+        return null;
+      }
+      setResolvedSrc(nextDataUrl);
+      setFailedToLoad(false);
+      setLoadError(null);
+      return {
+        ...props.attachment,
+        dataUrl: nextDataUrl,
+      };
+    };
+
+    let localError: string | null = null;
+    const readImageFile = desktopReadImageFile;
+    if (readImageFile) {
+      try {
+        const result = await readImageFile(filePath);
+        if (result.ok && typeof result.dataUrl === "string" && result.dataUrl.trim()) {
+          const nextDataUrl = result.dataUrl.trim();
+          setResolvedSrc(nextDataUrl);
+          setFailedToLoad(false);
+          setLoadError(null);
+          return {
+            ...props.attachment,
+            dataUrl: nextDataUrl,
+          };
+        }
+        localError = result.error ?? "read-failed";
+      } catch {
+        localError = "read-failed";
+      }
+    } else {
+      localError = "desktop-api-unavailable";
+    }
+
+    const remoteResolved = await tryResolveRemote();
+    if (remoteResolved) {
+      return remoteResolved;
+    }
+
+    if (localError) {
+      setFailedToLoad(true);
+      setLoadError(localError);
+      return null;
+    }
+    setFailedToLoad(true);
+    setLoadError("read-failed");
+    return null;
+  }, [desktopFetchImageUrl, desktopReadImageFile, props.attachment, props.resolveRemoteImage, resolvedSrc]);
+
+  useEffect(() => {
+    if (!requiresDesktopDecode || !localPathCandidate) {
+      return;
+    }
+    if (desktopResolveTriedRef.current.has(localPathCandidate)) {
+      return;
+    }
+    desktopResolveTriedRef.current.add(localPathCandidate);
+    void tryResolveLocalImage();
+  }, [localPathCandidate, props.attachment.dataUrl, requiresDesktopDecode, resolvedSrc, tryResolveLocalImage]);
+
+  const openAttachment = useCallback(async () => {
+    if (requiresDesktopDecode || failedToLoad) {
+      const recovered = await tryResolveLocalImage();
+      if (recovered) {
+        props.onOpen(recovered);
+        return;
+      }
+    }
+    if (!failedToLoad) {
+      const next =
+        resolvedSrc === props.attachment.dataUrl
+          ? props.attachment
+          : {
+              ...props.attachment,
+              dataUrl: resolvedSrc,
+            };
+      props.onOpen(next);
+      return;
+    }
+    props.onOpen(props.attachment);
+  }, [failedToLoad, props, requiresDesktopDecode, resolvedSrc, tryResolveLocalImage]);
+
+  const onPreviewImageError = useCallback(() => {
+    const pathCandidate = filePathFromImageSource(resolvedSrc || props.attachment.dataUrl);
+    if (isDesktopRuntime() && pathCandidate && !usesDesktopLocalScheme) {
+      const desktopSrc = buildDesktopLocalImageUrl(pathCandidate);
+      if (desktopSrc !== resolvedSrc) {
+        setResolvedSrc(desktopSrc);
+        setFailedToLoad(false);
+        setLoadError(null);
+        return;
+      }
+    }
+    if (
+      isDesktopRuntime() &&
+      (typeof desktopReadImageFile === "function" || typeof desktopFetchImageUrl === "function")
+    ) {
+      void tryResolveLocalImage();
+      return;
+    }
+    setFailedToLoad(true);
+    if (!loadError) {
+      setLoadError("img-decode-failed");
+    }
+  }, [
+    desktopReadImageFile,
+    desktopFetchImageUrl,
+    loadError,
+    props.attachment.dataUrl,
+    resolvedSrc,
+    tryResolveLocalImage,
+    usesDesktopLocalScheme,
+  ]);
+
+  return (
+    <button
+      type="button"
+      className="attachment-image-button"
+      onClick={() => {
+        void openAttachment();
+      }}
+      aria-label={`Open image ${props.attachment.name}`}
+      title="Click to view larger"
+    >
+      <div className="attachment-image">
+        {webLocalFileBlocked ? (
+          <div className="attachment-image-fallback">
+            Web cannot read local file paths. Open this session in desktop app.
+          </div>
+        ) : requiresDesktopDecode && !failedToLoad ? (
+          <div className="attachment-image-fallback">Loading local image...</div>
+        ) : failedToLoad ? (
+          <div className="attachment-image-fallback">
+            {loadError
+              ? `Image load failed: ${loadError}`
+              : desktopBridgeMissing
+              ? "Image load failed: desktop-api-unavailable"
+              : "Click to load local image"}
+          </div>
+        ) : (
+          <img
+            src={resolvedSrc}
+            alt={props.attachment.name}
+            className="attachment-image-preview"
+            onError={onPreviewImageError}
+          />
+        )}
+      </div>
+    </button>
+  );
+}
+
 function renderAttachment(att: Attachment) {
   if (att.isImage) {
     return (
@@ -90,6 +870,110 @@ function renderAttachment(att: Attachment) {
   );
 }
 
+function formatMessageDateTime(timestamp: number): string {
+  const normalized = normalizeMessageTimestamp(timestamp);
+  return new Date(normalized).toISOString();
+}
+
+type MessageRowProps = {
+  message: ChatMessage;
+  showTimestamp: boolean;
+  timestampFontSize: number;
+  onOpenImage: (attachment: Attachment) => void;
+  onResolveRemoteImage?: (filePath: string) => Promise<string | null>;
+};
+
+const MessageRow = React.memo(
+  function MessageRow(props: MessageRowProps) {
+    const { message } = props;
+    const isUser = message.role === "user";
+    const isSystem = message.role === "system";
+    const roleLabel = isSystem ? "System" : isUser ? "You" : "Assistant";
+    const markdownHtml = useMemo(
+      () => (message.text ? renderMarkdown(message.text) : ""),
+      [message.text],
+    );
+
+    if (isSystem) {
+      return (
+        <div className="message-row system">
+          <article
+            className="message-bubble system"
+            style={{
+              fontSize: "var(--claw-font-size)",
+              lineHeight: "var(--claw-line-height)",
+            }}
+          >
+            <div className="message-role">{roleLabel}</div>
+            <div className="message-body plain-text">{message.text}</div>
+            {props.showTimestamp && (
+              <div className="message-meta">
+                <time
+                  className="message-time"
+                  dateTime={formatMessageDateTime(message.timestamp)}
+                  title={formatLocalDateTime(message.timestamp)}
+                  style={{ fontSize: `${props.timestampFontSize}px` }}
+                >
+                  {formatLocalDateTime(message.timestamp)}
+                </time>
+              </div>
+            )}
+          </article>
+        </div>
+      );
+    }
+
+    return (
+      <div className={`message-row ${isUser ? "user" : "assistant"}`}>
+        <article className={`message-bubble ${isUser ? "user" : "assistant"}`}>
+          <div className="message-role">{roleLabel}</div>
+          {markdownHtml && (
+            <div
+              className="markdown"
+              dangerouslySetInnerHTML={{ __html: markdownHtml }}
+            />
+          )}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="attachments-wrap">
+              {message.attachments.map((att) => {
+                if (att.isImage) {
+                  return (
+                    <MessageImageAttachment
+                      key={att.id}
+                      attachment={att}
+                      onOpen={props.onOpenImage}
+                      resolveRemoteImage={props.onResolveRemoteImage}
+                    />
+                  );
+                }
+                return renderAttachment(att);
+              })}
+            </div>
+          )}
+          {props.showTimestamp && (
+            <div className="message-meta">
+              <time
+                className="message-time"
+                dateTime={formatMessageDateTime(message.timestamp)}
+                title={formatLocalDateTime(message.timestamp)}
+                style={{ fontSize: `${props.timestampFontSize}px` }}
+              >
+                {formatLocalDateTime(message.timestamp)}
+              </time>
+            </div>
+          )}
+        </article>
+      </div>
+    );
+  },
+  (prev, next) =>
+    prev.message === next.message &&
+    prev.showTimestamp === next.showTimestamp &&
+    prev.timestampFontSize === next.timestampFontSize &&
+    prev.onOpenImage === next.onOpenImage &&
+    prev.onResolveRemoteImage === next.onResolveRemoteImage,
+);
+
 export default function ChatView(props: ChatViewProps) {
   const [activeCommand, setActiveCommand] = useState(0);
   const [toolExpanded, setToolExpanded] = useState<Record<string, boolean>>({});
@@ -97,6 +981,8 @@ export default function ChatView(props: ChatViewProps) {
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_RENDER_STEP);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
+  const [imageLightbox, setImageLightbox] = useState<Attachment | null>(null);
+  const lightboxReadTriedRef = useRef<Set<string>>(new Set());
   const isComposingRef = useRef(false);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
   const thinkingMenuRef = useRef<HTMLDivElement | null>(null);
@@ -192,6 +1078,7 @@ export default function ChatView(props: ChatViewProps) {
     setToolExpanded({});
     setVisibleMessageCount(MESSAGE_RENDER_STEP);
     setAutoScrollEnabled(true);
+    setImageLightbox(null);
     setModelMenuOpen(false);
     setThinkingMenuOpen(false);
     const container = scrollRef.current;
@@ -234,6 +1121,116 @@ export default function ChatView(props: ChatViewProps) {
     window.addEventListener("mousedown", onClickOutside);
     return () => window.removeEventListener("mousedown", onClickOutside);
   }, []);
+
+  useEffect(() => {
+    if (!imageLightbox) {
+      return;
+    }
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setImageLightbox(null);
+      }
+    };
+    window.addEventListener("keydown", onEscape);
+    return () => window.removeEventListener("keydown", onEscape);
+  }, [imageLightbox]);
+
+  useEffect(() => {
+    if (!imageLightbox) {
+      return;
+    }
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [imageLightbox]);
+
+  const onLightboxImageError = useCallback(() => {
+    if (!imageLightbox) {
+      return;
+    }
+    const filePath = filePathFromImageSource(imageLightbox.dataUrl);
+    if (isDesktopRuntime() && filePath) {
+      const nextDesktopSrc = buildDesktopLocalImageUrl(filePath);
+      if (nextDesktopSrc !== imageLightbox.dataUrl) {
+        setImageLightbox((previous) => {
+          if (!previous || previous.id !== imageLightbox.id) {
+            return previous;
+          }
+          return {
+            ...previous,
+            dataUrl: nextDesktopSrc,
+          };
+        });
+        return;
+      }
+    }
+    const attemptedKey = imageLightbox.dataUrl;
+    if (!attemptedKey || lightboxReadTriedRef.current.has(attemptedKey)) {
+      return;
+    }
+    lightboxReadTriedRef.current.add(attemptedKey);
+    const readImageFile = window.desktopInfo?.readImageFile;
+    if (!readImageFile) {
+      return;
+    }
+    if (!filePath) {
+      return;
+    }
+    void readImageFile(filePath)
+      .then((result) => {
+        const nextDataUrl =
+          result.ok && typeof result.dataUrl === "string" ? result.dataUrl.trim() : "";
+        if (!nextDataUrl) {
+          return;
+        }
+        setImageLightbox((previous) => {
+          if (!previous || previous.id !== imageLightbox.id) {
+            return previous;
+          }
+          lightboxReadTriedRef.current.add(nextDataUrl);
+          return {
+            ...previous,
+            dataUrl: nextDataUrl,
+          };
+        });
+      })
+      .catch(() => {
+        // ignore
+      });
+  }, [imageLightbox]);
+
+  useEffect(() => {
+    if (!imageLightbox) {
+      return;
+    }
+    if (!isDesktopRuntime()) {
+      return;
+    }
+    const filePath = filePathFromImageSource(imageLightbox.dataUrl);
+    if (filePath) {
+      const nextDesktopSrc = buildDesktopLocalImageUrl(filePath);
+      if (nextDesktopSrc !== imageLightbox.dataUrl) {
+        setImageLightbox((previous) => {
+          if (!previous || previous.id !== imageLightbox.id) {
+            return previous;
+          }
+          return {
+            ...previous,
+            dataUrl: nextDesktopSrc,
+          };
+        });
+      }
+      return;
+    }
+  }, [imageLightbox]);
+  const lightboxBlockedByWebLocalFile = useMemo(() => {
+    if (!imageLightbox) {
+      return false;
+    }
+    return !isDesktopRuntime() && isLikelyLocalFileSource(imageLightbox.dataUrl);
+  }, [imageLightbox]);
 
   useEffect(() => {
     const container = scrollRef.current;
@@ -302,15 +1299,6 @@ export default function ChatView(props: ChatViewProps) {
   const toolFontSize = `${props.uiSettings.toolCallFontSize}px`;
   const toolMinorFontSize = `${Math.max(10, props.uiSettings.toolCallFontSize - 2)}px`;
   const typographyFontSize = `${props.uiSettings.fontSize}px`;
-
-  const formatMessageTime = useCallback((timestamp: number) => formatLocalDateTime(timestamp), []);
-
-  const formatMessageTimeTitle = useCallback((timestamp: number) => formatLocalDateTime(timestamp), []);
-
-  const formatMessageDateTime = useCallback((timestamp: number) => {
-    const normalized = normalizeMessageTimestamp(timestamp);
-    return new Date(normalized).toISOString();
-  }, []);
 
   useEffect(() => {
     if (props.messages.length < visibleMessageCount) {
@@ -421,68 +1409,10 @@ export default function ChatView(props: ChatViewProps) {
     }
   };
 
-  const renderMessage = (msg: ChatMessage) => {
-    const isUser = msg.role === "user";
-    const isSystem = msg.role === "system";
-    const roleLabel = isSystem ? "System" : isUser ? "You" : "Assistant";
-    if (isSystem) {
-      return (
-        <div key={msg.id} className="message-row system">
-          <article
-            className="message-bubble system"
-            style={{
-              fontSize: "var(--claw-font-size)",
-              lineHeight: "var(--claw-line-height)",
-            }}
-          >
-            <div className="message-role">{roleLabel}</div>
-            <div className="message-body plain-text">{msg.text}</div>
-            {props.uiSettings.showMessageTimestamp && (
-              <div className="message-meta">
-                <time
-                  className="message-time"
-                  dateTime={formatMessageDateTime(msg.timestamp)}
-                  title={formatMessageTimeTitle(msg.timestamp)}
-                  style={{ fontSize: `${props.uiSettings.messageTimestampFontSize}px` }}
-                >
-                  {formatMessageTime(msg.timestamp)}
-                </time>
-              </div>
-            )}
-          </article>
-        </div>
-      );
-    }
-
-    return (
-      <div key={msg.id} className={`message-row ${isUser ? "user" : "assistant"}`}>
-        <article className={`message-bubble ${isUser ? "user" : "assistant"}`}>
-          <div className="message-role">{roleLabel}</div>
-          {msg.text && (
-            <div
-              className="markdown"
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.text) }}
-            />
-          )}
-          {msg.attachments && msg.attachments.length > 0 && (
-            <div className="attachments-wrap">{msg.attachments.map((att) => renderAttachment(att))}</div>
-          )}
-          {props.uiSettings.showMessageTimestamp && (
-            <div className="message-meta">
-              <time
-                className="message-time"
-                dateTime={formatMessageDateTime(msg.timestamp)}
-                title={formatMessageTimeTitle(msg.timestamp)}
-                style={{ fontSize: `${props.uiSettings.messageTimestampFontSize}px` }}
-              >
-                {formatMessageTime(msg.timestamp)}
-              </time>
-            </div>
-          )}
-        </article>
-      </div>
-    );
-  };
+  const streamMarkdownHtml = useMemo(
+    () => (props.streamText ? renderMarkdown(props.streamText) : ""),
+    [props.streamText],
+  );
 
   const renderToolPanel = (tools: ToolItem[], key: string) => {
     if (tools.length === 0) {
@@ -571,7 +1501,8 @@ export default function ChatView(props: ChatViewProps) {
                 padding: `${modelBadgePaddingY} ${modelBadgePaddingX}`,
               }}
             >
-              Model: {props.sessionInfo.modelLabel || "-"}
+              Agent: {props.sessionInfo.agentLabel || "-"} · Model:{" "}
+              {props.sessionInfo.modelLabel || "-"}
             </button>
 
             {modelMenuOpen && (
@@ -636,7 +1567,13 @@ export default function ChatView(props: ChatViewProps) {
 
           {displayedMessages.map((msg) => (
             <React.Fragment key={msg.id}>
-              {renderMessage(msg)}
+              <MessageRow
+                message={msg}
+                showTimestamp={props.uiSettings.showMessageTimestamp}
+                timestampFontSize={props.uiSettings.messageTimestampFontSize}
+                onOpenImage={setImageLightbox}
+                onResolveRemoteImage={props.onResolveRemoteImage}
+              />
               {props.uiSettings.showToolActivity &&
                 renderToolPanel(toolTimeline.byMessageId.get(msg.id) ?? [], `tool-after-${msg.id}`)}
             </React.Fragment>
@@ -648,7 +1585,7 @@ export default function ChatView(props: ChatViewProps) {
                 <div className="message-role">Assistant</div>
                 <div
                   className="markdown"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(props.streamText) }}
+                  dangerouslySetInnerHTML={{ __html: streamMarkdownHtml }}
                 />
               </article>
             </div>
@@ -795,6 +1732,16 @@ export default function ChatView(props: ChatViewProps) {
             </div>
 
             <div className="footer-stats" style={{ fontSize: `${props.uiSettings.footerStatsFontSize}px` }}>
+              {props.onCompact && (
+                <button
+                  type="button"
+                  onClick={props.onCompact}
+                  className="ui-btn ui-btn-light compact-btn"
+                  title="Compact session context"
+                >
+                  🧹 Compact
+                </button>
+              )}
               <span>
                 Context:{" "}
                 {(() => {
@@ -858,6 +1805,55 @@ export default function ChatView(props: ChatViewProps) {
           </div>
         </div>
       </footer>
+
+      {imageLightbox && (
+        <div
+          className="image-lightbox-backdrop"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Image viewer"
+          onClick={() => setImageLightbox(null)}
+        >
+          <div className="image-lightbox" onClick={(event) => event.stopPropagation()}>
+            <div className="image-lightbox-header">
+              <div className="image-lightbox-name" title={imageLightbox.name}>
+                {imageLightbox.name}
+              </div>
+              <div className="image-lightbox-actions">
+                <a
+                  className="ui-btn ui-btn-light"
+                  href={imageLightbox.dataUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open
+                </a>
+                <button
+                  type="button"
+                  className="ui-btn ui-btn-primary"
+                  onClick={() => setImageLightbox(null)}
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="image-lightbox-body">
+              {lightboxBlockedByWebLocalFile ? (
+                <div className="attachment-image-fallback">
+                  Web cannot render local file paths. Use desktop app or provide http/data image URL.
+                </div>
+              ) : (
+                <img
+                  src={imageLightbox.dataUrl}
+                  alt={imageLightbox.name}
+                  className="image-lightbox-image"
+                  onError={onLightboxImageError}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

@@ -20,6 +20,9 @@ function sanitizeAssistantText(text: string): string {
 }
 
 export function extractText(message: unknown): string | null {
+  if (!message || typeof message !== "object") {
+    return null;
+  }
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role : "";
   const content = m.content;
@@ -61,32 +64,235 @@ export function extractText(message: unknown): string | null {
   return null;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function pickString(source: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function normalizeImageMimeType(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (!normalized) {
+    return null;
+  }
+  if (normalized.startsWith("image/")) {
+    return normalized;
+  }
+  if (normalized === "png") {
+    return "image/png";
+  }
+  if (normalized === "jpg" || normalized === "jpeg") {
+    return "image/jpeg";
+  }
+  if (normalized === "gif") {
+    return "image/gif";
+  }
+  if (normalized === "webp") {
+    return "image/webp";
+  }
+  if (normalized === "bmp") {
+    return "image/bmp";
+  }
+  if (normalized === "svg" || normalized === "svg+xml") {
+    return "image/svg+xml";
+  }
+  return null;
+}
+
+function inferMimeTypeFromUrl(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  const dataMatch = /^data:(image\/[^;,]+)[;,]/i.exec(trimmed);
+  if (dataMatch?.[1]) {
+    return normalizeImageMimeType(dataMatch[1]);
+  }
+  const withoutQuery = trimmed.split("?")[0]?.split("#")[0] ?? "";
+  const ext = withoutQuery.split(".").pop()?.toLowerCase() ?? "";
+  if (ext === "png") {
+    return "image/png";
+  }
+  if (ext === "jpg" || ext === "jpeg") {
+    return "image/jpeg";
+  }
+  if (ext === "gif") {
+    return "image/gif";
+  }
+  if (ext === "webp") {
+    return "image/webp";
+  }
+  if (ext === "bmp") {
+    return "image/bmp";
+  }
+  if (ext === "svg") {
+    return "image/svg+xml";
+  }
+  return null;
+}
+
+function looksLikeImageUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+  if (/^data:image\//i.test(trimmed)) {
+    return true;
+  }
+  if (/^(https?:|blob:|file:)/i.test(trimmed)) {
+    return true;
+  }
+  if (trimmed.startsWith("/")) {
+    return Boolean(inferMimeTypeFromUrl(trimmed));
+  }
+  return Boolean(inferMimeTypeFromUrl(trimmed));
+}
+
+function looksLikeBase64(value: string): boolean {
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length < 32 || compact.length % 4 === 1) {
+    return false;
+  }
+  return /^[A-Za-z0-9+/]+=*$/.test(compact);
+}
+
 export function extractImages(message: unknown): Array<{ data: string; mimeType: string }> {
-  const m = message as Record<string, unknown>;
-  const content = m.content;
-  if (!Array.isArray(content)) {
-    return [];
-  }
   const images: Array<{ data: string; mimeType: string }> = [];
-  for (const part of content) {
-    const item = part as Record<string, unknown>;
-    if (item.type !== "image") {
+  const seenValues = new Set<unknown>();
+  const seenImageKeys = new Set<string>();
+  const MAX_TRAVERSE_DEPTH = 6;
+  const MAX_TRAVERSE_NODES = 500;
+  const MAX_IMAGES_PER_MESSAGE = 12;
+  const MAX_IMAGE_DATA_CHARS = 8_000_000;
+  const FINGERPRINT_HEAD = 96;
+  const FINGERPRINT_TAIL = 64;
+  const queue: Array<{ value: unknown; depth: number }> = [{ value: message, depth: 0 }];
+  let traversed = 0;
+
+  const pushImage = (rawData: string, mimeHint: string | null) => {
+    if (images.length >= MAX_IMAGES_PER_MESSAGE) {
+      return;
+    }
+    const data = rawData.trim();
+    if (!data) {
+      return;
+    }
+    if (data.length > MAX_IMAGE_DATA_CHARS) {
+      return;
+    }
+    const inferredMime = normalizeImageMimeType(mimeHint) ?? inferMimeTypeFromUrl(data);
+    if (!inferredMime) {
+      return;
+    }
+    const head = data.slice(0, FINGERPRINT_HEAD);
+    const tail = data.length > FINGERPRINT_HEAD + FINGERPRINT_TAIL ? data.slice(-FINGERPRINT_TAIL) : "";
+    const imageKey = `${inferredMime}:${data.length}:${head}:${tail}`;
+    if (seenImageKeys.has(imageKey)) {
+      return;
+    }
+    seenImageKeys.add(imageKey);
+    images.push({ data, mimeType: inferredMime });
+  };
+
+  while (queue.length > 0 && traversed < MAX_TRAVERSE_NODES) {
+    const currentNode = queue.shift();
+    if (!currentNode) {
       continue;
     }
-    const source = item.source as Record<string, unknown> | undefined;
-    if (!source) {
+    traversed += 1;
+    const { value: current, depth } = currentNode;
+    if (current === null || current === undefined || seenValues.has(current)) {
       continue;
     }
-    const data = typeof source.data === "string" ? source.data : null;
-    const mimeType = typeof source.media_type === "string" ? source.media_type : null;
-    if (data && mimeType) {
-      images.push({ data, mimeType });
+    seenValues.add(current);
+    if (Array.isArray(current)) {
+      if (depth < MAX_TRAVERSE_DEPTH) {
+        for (const item of current) {
+          queue.push({ value: item, depth: depth + 1 });
+        }
+      }
+      continue;
+    }
+    if (!isRecord(current)) {
+      continue;
+    }
+
+    const type = pickString(current, ["type"])?.toLowerCase() ?? "";
+    const mime =
+      normalizeImageMimeType(
+        pickString(current, [
+          "media_type",
+          "mimeType",
+          "mime_type",
+          "contentType",
+          "content_type",
+          "format",
+        ]),
+      ) ?? (type.includes("image") ? "image/png" : null);
+    const hasImageHint =
+      type.includes("image") || Object.keys(current).some((key) => key.toLowerCase().includes("image"));
+
+    const nestedSource = current.source;
+    if (isRecord(nestedSource)) {
+      const sourceMime =
+        normalizeImageMimeType(
+          pickString(nestedSource, ["media_type", "mimeType", "mime_type", "contentType", "content_type"]),
+        ) ?? mime;
+      const sourceData = pickString(nestedSource, ["data", "base64", "b64_json", "image_base64"]);
+      if (sourceData && (looksLikeImageUrl(sourceData) || looksLikeBase64(sourceData))) {
+        pushImage(sourceData, sourceMime);
+      }
+      const sourceUrl = pickString(nestedSource, ["url", "uri", "src", "href"]);
+      if (sourceUrl && looksLikeImageUrl(sourceUrl)) {
+        pushImage(sourceUrl, sourceMime);
+      }
+    }
+
+    const imageUrlValue = current.image_url ?? current.imageUrl;
+    if (typeof imageUrlValue === "string" && looksLikeImageUrl(imageUrlValue)) {
+      pushImage(imageUrlValue, mime);
+    } else if (isRecord(imageUrlValue)) {
+      const imageUrl = pickString(imageUrlValue, ["url", "uri", "src", "href"]);
+      if (imageUrl && looksLikeImageUrl(imageUrl)) {
+        pushImage(imageUrl, mime);
+      }
+    }
+
+    const url = pickString(current, ["url", "uri", "src", "href"]);
+    if (url && looksLikeImageUrl(url) && (hasImageHint || Boolean(inferMimeTypeFromUrl(url)))) {
+      pushImage(url, mime);
+    }
+
+    const directData = pickString(current, ["data", "base64", "b64_json", "image_base64", "imageBase64"]);
+    if (directData && (looksLikeImageUrl(directData) || (hasImageHint && looksLikeBase64(directData)))) {
+      pushImage(directData, mime);
+    }
+
+    if (depth >= MAX_TRAVERSE_DEPTH) {
+      continue;
+    }
+    for (const nested of Object.values(current)) {
+      if (isRecord(nested) || Array.isArray(nested)) {
+        queue.push({ value: nested, depth: depth + 1 });
+      }
     }
   }
+
   return images;
 }
 
 export function isToolMessage(message: unknown): boolean {
+  if (!message || typeof message !== "object") {
+    return false;
+  }
   const m = message as Record<string, unknown>;
   const role = typeof m.role === "string" ? m.role.toLowerCase() : "";
   if (role === "tool" || role === "toolresult" || role === "tool_result" || role === "function") {
