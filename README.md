@@ -93,9 +93,11 @@ electron/      Desktop main/preload bridge, local image protocol
 scripts/       Runtime and environment checks
 ```
 
-## Contributing
+## Disclaimer & Status
 
-Issues and PRs welcome. This is an early-stage project — expect rapid iteration.
+⚠️ This project is an AI-assisted rapid development experiment.
+
+Because it was built quickly with the help of AI, the codebase may contain bugs, edge cases, or unoptimized architecture. It is published strictly for learning, inspiration, and reference purposes.
 
 ## License
 
