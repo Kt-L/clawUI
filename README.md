@@ -75,7 +75,7 @@ Open the URL printed by Vite (default `http://localhost:5178`), go to **Settings
 
 ## Demo
 
-https://github.com/user-attachments/assets/6a96e9b7-3093-4ac9-a479-2d337d57a187
+https://github.com/user-attachments/assets/ef7d17be-8a14-40d3-896e-f26839052041
 
 > *Short walkthrough of the UI*
 
