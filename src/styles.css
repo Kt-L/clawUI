@@ -1192,6 +1192,127 @@ body::before {
   padding: 0;
 }
 
+/* ---- Attachment Preview (composer) ---- */
+
+.attachment-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 4px 0;
+}
+
+.attachment-preview-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--claw-border) 70%, white);
+  background: #f8fafd;
+  overflow: hidden;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.attachment-preview-item:hover {
+  border-color: color-mix(in srgb, var(--claw-accent) 40%, var(--claw-border));
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.attachment-preview-thumb {
+  width: 100%;
+  height: 72px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f0f4f8;
+}
+
+.attachment-preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.attachment-preview-file-icon {
+  width: 100%;
+  height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #eef2f7 0%, #e4eaf2 100%);
+}
+
+.attachment-preview-file-ext {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--claw-text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.attachment-preview-info {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 6px 6px;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.attachment-preview-name {
+  font-size: 11px;
+  color: var(--claw-text-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.attachment-preview-size {
+  font-size: 10px;
+  color: var(--claw-text-muted);
+  line-height: 1.2;
+}
+
+.attachment-preview-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease;
+  padding: 0;
+}
+
+.attachment-preview-item:hover .attachment-preview-remove {
+  opacity: 1;
+}
+
+.attachment-preview-remove:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
 .composer-actions-row {
   display: flex;
   justify-content: space-between;
@@ -2399,6 +2520,36 @@ body::before {
   color: var(--claw-neutral-500);
 }
 
+.attachment-preview-item {
+  border-color: var(--claw-neutral-200);
+  background: var(--claw-neutral-50);
+}
+
+.attachment-preview-item:hover {
+  border-color: var(--claw-neutral-300);
+}
+
+.attachment-preview-name {
+  color: var(--claw-neutral-700);
+}
+
+.attachment-preview-size {
+  color: var(--claw-neutral-500);
+}
+
+.attachment-preview-thumb {
+  background: var(--claw-neutral-100);
+}
+
+.attachment-preview-file-icon {
+  background: linear-gradient(135deg, var(--claw-neutral-100) 0%, var(--claw-neutral-200) 100%);
+}
+
+.attachment-preview-file-ext {
+  color: var(--claw-neutral-500);
+  background: rgba(255, 255, 255, 0.6);
+}
+
 .attachment-trigger {
   border: 1px solid var(--claw-neutral-200);
   border-radius: var(--claw-radius-sm);
@@ -2775,4 +2926,1159 @@ body::before {
     width: 100%;
     height: 100%;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   ✦  Frost & Glow v4
+   ═══════════════════════════════════════════════════════════════════════════
+   v4 fixes:
+     • Session card: ENTIRE card tilts (border+bg+shadow), perspective on
+       parent .sidebar-list, transform on .session-card itself.
+     • Menus: z-index 9999 + overflow escape from .main-shell.  Opaque
+       background (no see-through glass on menus). Scrim overlay behind
+       open menus for visual focus.
+     • Modal flash: eliminated by starting backdrop opacity higher and
+       adding a 1-frame delay before modal content appears.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ---------- 0. Design tokens ------------------------------------------ */
+:root {
+  /* Base palette */
+  --frost-bg:            #f9fafb;
+  --frost-surface:       #ffffff;
+  --frost-border:        #e5e7eb;
+  --frost-border-strong: #d1d5db;
+
+  /* Warm-yellow accent */
+  --frost-warm:          #fffbeb;
+  --frost-warm-hover:    #fef9ee;
+  --frost-warm-active:   #fef3c7;
+  --frost-warm-border:   #fde68a;
+  --frost-warm-glow:     rgba(253, 230, 138, 0.45);
+
+  /* Glassmorphism — used on sidebar/header/composer (large panels) */
+  --frost-glass-bg:      rgba(255, 255, 255, 0.62);
+  --frost-glass-blur:    blur(18px) saturate(180%);
+  --frost-glass-border:  rgba(255, 255, 255, 0.55);
+
+  /* Menu background — OPAQUE, no glass. Clean, no bleed-through. */
+  --frost-menu-bg:       rgba(255, 255, 255, 1);
+
+  /* Easing */
+  --ease-out-quart:  cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-expo:   cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out:     cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Timing */
+  --t-press:  calc(60ms  * var(--claw-animation-duration-scale));
+  --t-fast:   calc(140ms * var(--claw-animation-duration-scale));
+  --t-normal: calc(240ms * var(--claw-animation-duration-scale));
+  --t-slow:   calc(340ms * var(--claw-animation-duration-scale));
+  --t-spring: calc(380ms * var(--claw-animation-duration-scale));
+}
+
+/* ---------- GPU compositing ------------------------------------------- */
+.sidebar-shell,
+.settings-modal,
+.new-session-modal,
+.ui-btn {
+  will-change: transform, opacity;
+}
+
+/* Browser auto-promotes elements with active CSS animations to compositing layers.
+   Explicit will-change forces the layer to persist after animation ends, causing
+   GPU bilinear text filtering (= blurry text) until class cleanup. Don't use it. */
+.chat-thread-outgoing {
+  will-change: transform, opacity;
+}
+
+/* ---------- 1. Foundations --------------------------------------------- */
+body {
+  background: var(--frost-bg);
+}
+
+body::before {
+  opacity: 0.22;
+  background:
+    radial-gradient(ellipse at 12% -6%, rgba(148, 163, 184, 0.18), transparent 52%),
+    radial-gradient(ellipse at 88% 4%,  rgba(148, 163, 184, 0.14), transparent 48%),
+    radial-gradient(ellipse at 50% 105%, rgba(148, 163, 184, 0.10), transparent 40%);
+}
+
+/* ---------- 2. Main shell — allow menus to escape -------------------- */
+.main-shell {
+  background: var(--frost-surface);
+  border-color: var(--frost-border);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  /* CRITICAL: override overflow:hidden so menus aren't clipped.
+     The border-radius corner masking is handled by child elements. */
+  overflow: visible !important;
+  transition:
+    box-shadow   var(--t-normal) var(--ease-out-quart),
+    border-color var(--t-normal) var(--ease-out-quart);
+}
+
+/* Re-clip children that need it (scroll area, header corners, footer corners) */
+.chat-header {
+  border-top-left-radius: 28px;
+  border-top-right-radius: 28px;
+  overflow: hidden;
+}
+
+.chat-scroll {
+  overflow-x: hidden;
+  /* overflow-y stays auto for scrolling */
+}
+
+.composer-shell {
+  border-bottom-left-radius: 28px;
+  border-bottom-right-radius: 28px;
+  overflow: hidden;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   3. Sidebar — glass + critically-damped entrance
+   ═══════════════════════════════════════════════════════════════════ */
+.sidebar-shell {
+  background: var(--frost-glass-bg);
+  border-color: var(--frost-glass-border);
+  backdrop-filter: var(--frost-glass-blur);
+  -webkit-backdrop-filter: var(--frost-glass-blur);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  animation: cd-sidebar-in var(--t-spring) both;
+  transition:
+    width        var(--t-slow) var(--ease-out-expo),
+    min-width    var(--t-slow) var(--ease-out-expo),
+    padding      var(--t-normal) var(--ease-out-quart),
+    opacity      var(--t-normal) var(--ease-out-quart),
+    background   var(--t-normal) var(--ease-out-quart),
+    border-color var(--t-normal) var(--ease-out-quart),
+    box-shadow   var(--t-normal) var(--ease-out-quart);
+}
+
+.sidebar-top {
+  border-bottom-color: var(--frost-border);
+}
+
+@keyframes cd-sidebar-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-10px) scale(0.975);
+  }
+  50% {
+    opacity: 1;
+    transform: translateX(1.5px) scale(1.004);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+.sidebar-shell.is-collapsed {
+  animation: cd-sidebar-collapse var(--t-normal) both;
+}
+
+@keyframes cd-sidebar-collapse {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(0.99); }
+  100% { transform: scale(1); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   4. Session cards — 3D perspective tilt
+   ═══════════════════════════════════════════════════════════════════
+   perspective on .sidebar-list (the scroll container / parent).
+   transform on .session-card itself — the ENTIRE card (border, bg,
+   shadow, content) tilts as one rigid body.
+   JS sets CSS vars: --tilt-x, --tilt-y, --glow-x, --glow-y, --lift.
+   ═══════════════════════════════════════════════════════════════════ */
+.sidebar-list {
+  perspective: 800px;
+  perspective-origin: center center;
+}
+
+.session-card {
+  --tilt-x: 0deg;
+  --tilt-y: 0deg;
+  --glow-x: 50%;
+  --glow-y: 50%;
+  --lift: 0px;
+
+  border: 1px solid transparent;
+  background: transparent;
+  border-radius: var(--claw-radius-sm);
+  overflow: hidden;
+  box-shadow: none;
+  position: relative;
+  transform-style: preserve-3d;
+  /* The card itself transforms — border, bg, everything moves together */
+  transform:
+    rotateX(var(--tilt-x))
+    rotateY(var(--tilt-y))
+    translateZ(var(--lift));
+  transition:
+    transform        var(--t-normal) var(--ease-out-expo),
+    background-color var(--t-normal) var(--ease-out-quart),
+    border-color     var(--t-normal) var(--ease-out-quart),
+    box-shadow       var(--t-slow)   var(--ease-out-expo);
+}
+
+/* Specular highlight — follows cursor via CSS vars */
+.session-card::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(
+    ellipse 180px 140px at var(--glow-x) var(--glow-y),
+    rgba(255, 248, 210, 0.65),
+    transparent 70%
+  );
+  transition: opacity var(--t-normal) var(--ease-out-quart);
+  z-index: 2;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Hide front-side content when card reaches the back side (blank back face). */
+.session-card > .session-main-row {
+  position: relative;
+  z-index: 3;
+  transform: translateZ(1px);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
+
+/* Hover: warm tint + depth shadow that shifts with tilt */
+.session-card:hover {
+  background: var(--frost-warm-hover);
+  border-color: var(--frost-warm-border);
+  box-shadow:
+    0 8px 24px rgba(253, 230, 138, 0.25),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.session-card:hover::after {
+  opacity: 1;
+}
+
+/* Active (selected) */
+.session-card.is-active {
+  background: var(--frost-warm-active);
+  border-color: var(--frost-warm-border);
+  box-shadow:
+    0 0 0 3px var(--frost-warm-glow),
+    0 2px 8px rgba(253, 230, 138, 0.22);
+}
+
+.session-card.is-active::after {
+  opacity: 0.5;
+}
+
+/* ---- Click: directional flip from the side the mouse clicked ---- */
+.session-card.is-flipping {
+  pointer-events: none;
+  /* Override the tilt transform — animation takes full control */
+  transition: none !important;
+  transform-origin: center center !important;
+  transform-box: border-box;
+  /* CRITICAL: overflow:hidden flattens preserve-3d per CSS spec,
+     breaking backface-visibility on children. Lift it during flip
+     so the back face is properly blank. */
+  overflow: visible !important;
+}
+
+/* Left-half click: start rotation from the left side */
+.session-card.flip-from-left {
+  animation: card-flip-from-left 440ms linear both !important;
+}
+
+/* Right-half click: start rotation from the right side */
+.session-card.flip-from-right {
+  animation: card-flip-from-right 440ms linear both !important;
+}
+
+/*
+ * Coin-flip: flick up → spin in air → drop back → bounce-settle.
+ *
+ * translateY = projectile arc (parabolic rise, gravity fall, landing bounce)
+ * rotateY   = main spin (front-loaded impulse, decelerates with drag)
+ * rotateX   = subtle forward/back wobble (2° max — the "not-perfect" axis)
+ * rotateZ   = tiny lateral sway (1° max — coin never spins dead-straight)
+ * scale     = depth breathing (bigger at peak, micro-squish on landing)
+ *
+ * Linear timing — all physics baked into values. 440ms total.
+ */
+@keyframes card-flip-from-left {
+  0%   { transform: rotateY(0deg)    rotateX(0deg)    rotateZ(0deg)    translateY(0)      scale(1);     }
+  10%  { transform: rotateY(-36deg)  rotateX(1.5deg)  rotateZ(0.5deg)  translateY(-14px)  scale(1.03);  }
+  28%  { transform: rotateY(-155deg) rotateX(2deg)    rotateZ(1deg)    translateY(-22px)  scale(1.05);  }
+  48%  { transform: rotateY(-265deg) rotateX(-0.5deg) rotateZ(0deg)    translateY(-16px)  scale(1.04);  }
+  66%  { transform: rotateY(-342deg) rotateX(-1.5deg) rotateZ(-0.5deg) translateY(-4px)   scale(1.01);  }
+  80%  { transform: rotateY(-365deg) rotateX(1deg)    rotateZ(0.3deg)  translateY(5px)    scale(0.99);  }
+  91%  { transform: rotateY(-358deg) rotateX(-0.3deg) rotateZ(-0.1deg) translateY(-2px)   scale(1.005); }
+  100% { transform: rotateY(-360deg) rotateX(0deg)    rotateZ(0deg)    translateY(0)      scale(1);     }
+}
+
+@keyframes card-flip-from-right {
+  0%   { transform: rotateY(0deg)   rotateX(0deg)    rotateZ(0deg)     translateY(0)      scale(1);     }
+  10%  { transform: rotateY(36deg)  rotateX(1.5deg)  rotateZ(-0.5deg)  translateY(-14px)  scale(1.03);  }
+  28%  { transform: rotateY(155deg) rotateX(2deg)    rotateZ(-1deg)    translateY(-22px)  scale(1.05);  }
+  48%  { transform: rotateY(265deg) rotateX(-0.5deg) rotateZ(0deg)     translateY(-16px)  scale(1.04);  }
+  66%  { transform: rotateY(342deg) rotateX(-1.5deg) rotateZ(0.5deg)   translateY(-4px)   scale(1.01);  }
+  80%  { transform: rotateY(365deg) rotateX(1deg)    rotateZ(-0.3deg)  translateY(5px)    scale(0.99);  }
+  91%  { transform: rotateY(358deg) rotateX(-0.3deg) rotateZ(0.1deg)   translateY(-2px)   scale(1.005); }
+  100% { transform: rotateY(360deg) rotateX(0deg)    rotateZ(0deg)     translateY(0)      scale(1);     }
+}
+
+.session-dot.is-active {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.15);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   5. Top bar + Chat header — glass
+   ═══════════════════════════════════════════════════════════════════ */
+.main-topbar {
+  background: var(--frost-glass-bg);
+  border-bottom-color: var(--frost-border);
+  backdrop-filter: var(--frost-glass-blur);
+  -webkit-backdrop-filter: var(--frost-glass-blur);
+}
+
+.chat-header {
+  background: var(--frost-glass-bg);
+  border-bottom-color: var(--frost-border);
+  backdrop-filter: var(--frost-glass-blur);
+  -webkit-backdrop-filter: var(--frost-glass-blur);
+  /* Allow menus to overflow the header */
+  overflow: visible !important;
+  position: relative;
+  z-index: 10;
+}
+
+/* Prevent menu content from inheriting perceived glass blur from header layer. */
+.chat-header:has(.menu-open-ctx),
+.chat-header.menu-layer-active {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  z-index: 10000;
+}
+
+/* chat-header-actions — the parent of .floating-menu — needs to allow overflow */
+.chat-header-actions {
+  overflow: visible;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   6. Composer — glass + visible overflow for slash menu
+   ═══════════════════════════════════════════════════════════════════ */
+.composer-shell {
+  background: var(--frost-glass-bg);
+  backdrop-filter: var(--frost-glass-blur);
+  -webkit-backdrop-filter: var(--frost-glass-blur);
+  border-top: 1px solid var(--frost-border);
+  /* Allow slash-menu to escape upward */
+  overflow: visible !important;
+  position: relative;
+  z-index: 10;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   7. Floating menus / popups — OPAQUE + scrim backdrop
+   ═══════════════════════════════════════════════════════════════════
+   No more frosted glass on menus — it caused visual noise.
+   Instead: near-opaque white, clean shadow, high z-index.
+   Plus a scrim overlay behind to dim/blur the page for focus.
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Scrim: semi-transparent overlay that dims the page when a dropdown
+   menu is open. Gives visual focus to the menu without backdrop-filter
+   (which would blur the menus themselves due to stacking contexts).
+   z-index 9998 = behind menus (9999), above everything else. */
+.menu-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: rgba(15, 23, 42, 0.12);
+  animation: scrim-in var(--t-fast) var(--ease-out-quart) both;
+}
+
+@keyframes scrim-in {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+/* When a menu is open, its parent .relative wrapper needs to
+   escape the scrim's stacking context (scrim is portaled to body). */
+.menu-open-ctx {
+  position: relative;
+  z-index: 9999 !important;
+}
+
+/* Composer also needs elevated z-index when slash menu is showing */
+.composer-shell:has(.slash-menu) {
+  z-index: 9999 !important;
+}
+
+.floating-menu,
+.thinking-menu {
+  background: var(--frost-menu-bg);
+  border: 1px solid rgba(253, 230, 138, 0.35);
+  filter: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  isolation: isolate;
+  box-shadow:
+    0 0 0 1px rgba(253, 230, 138, 0.10),
+    0 0 20px rgba(253, 230, 138, 0.12),
+    0 12px 40px rgba(0, 0, 0, 0.14),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 9999 !important;
+  transform-origin: top center;
+  animation: cd-menu-in var(--t-spring) both;
+}
+
+.slash-menu {
+  background: var(--frost-menu-bg);
+  border: 1px solid rgba(253, 230, 138, 0.35);
+  filter: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  isolation: isolate;
+  box-shadow:
+    0 0 0 1px rgba(253, 230, 138, 0.10),
+    0 0 20px rgba(253, 230, 138, 0.12),
+    0 12px 40px rgba(0, 0, 0, 0.14),
+    0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 9999 !important;
+  transform-origin: bottom center;
+  animation: cd-menu-in-up var(--t-spring) both;
+}
+
+@keyframes cd-menu-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(4px);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.008) translateY(-0.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes cd-menu-in-up {
+  0% {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.008) translateY(0.5px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+/* Menu items */
+.floating-item,
+.thinking-item,
+.slash-item {
+  transition:
+    background-color var(--t-fast) var(--ease-out-quart),
+    color            var(--t-fast) var(--ease-out-quart),
+    transform        var(--t-fast) var(--ease-out-quart);
+}
+
+.floating-item:hover,
+.slash-item:hover,
+.thinking-item:hover {
+  background: #f3f4f6;
+  transform: translateX(2px);
+}
+
+.floating-item.active,
+.slash-item.active,
+.thinking-item.active {
+  background: var(--frost-warm);
+  box-shadow: inset 0 0 0 1px var(--frost-warm-border);
+}
+
+.floating-item:active,
+.slash-item:active,
+.thinking-item:active {
+  background: var(--frost-warm-active);
+  transform: translateX(2px) scale(0.98);
+  transition-duration: var(--t-press);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   8. Modal — NO FLASH fix
+   ═══════════════════════════════════════════════════════════════════
+   The flash was caused by:
+     1. backdrop-filter blur animating from 0 → full (causes a white
+        flash as the blur initialises)
+     2. opacity:0 → 1 on a white modal surface against white bg
+   Fix: backdrop starts at opacity 0.5 (skip the worst flash frames),
+   modal starts fully opaque with only a scale/translate animation
+   (no opacity animation on the modal content itself).
+   ═══════════════════════════════════════════════════════════════════ */
+.modal-backdrop {
+  background: rgba(15, 23, 42, 0.38);
+  backdrop-filter: blur(12px) saturate(140%);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  animation: modal-backdrop-in var(--t-normal) var(--ease-out-quart) both;
+}
+
+@keyframes modal-backdrop-in {
+  0% {
+    opacity: 0.55;
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  100% {
+    opacity: 1;
+    backdrop-filter: blur(12px) saturate(140%);
+    -webkit-backdrop-filter: blur(12px) saturate(140%);
+  }
+}
+
+.settings-modal,
+.new-session-modal {
+  background: var(--frost-surface);
+  border-color: var(--frost-border);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.14),
+    0 2px 8px rgba(0, 0, 0, 0.06);
+  transform-origin: center center;
+  /* NO opacity animation on the modal itself — prevents white flash */
+  animation: cd-modal-in var(--t-spring) both;
+}
+
+@keyframes cd-modal-in {
+  0% {
+    transform: scale(0.96) translateY(6px);
+  }
+  50% {
+    transform: scale(1.006) translateY(-0.5px);
+  }
+  100% {
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modal-header {
+  background: var(--frost-surface);
+  border-bottom-color: var(--frost-border);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   9. Buttons — press feedback
+   ═══════════════════════════════════════════════════════════════════ */
+.ui-btn {
+  transition:
+    background-color var(--t-fast) var(--ease-out-quart),
+    border-color     var(--t-fast) var(--ease-out-quart),
+    color            var(--t-fast) var(--ease-out-quart),
+    box-shadow       var(--t-fast) var(--ease-out-quart),
+    transform        var(--t-fast) var(--ease-out-quart);
+}
+
+.ui-btn:hover:not(:disabled) {
+  transform: translateY(-0.5px);
+}
+
+.ui-btn:active:not(:disabled) {
+  transform: scale(0.96) translateY(0.5px);
+  transition-duration: var(--t-press);
+}
+
+.ui-btn-light:active:not(:disabled) {
+  background: var(--frost-border);
+}
+
+.ui-btn-primary:active:not(:disabled) {
+  background: #0f0f11;
+  border-color: #0f0f11;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   10. List-item / interactive press feedback
+   ═══════════════════════════════════════════════════════════════════ */
+.session-main {
+  transition: background-color var(--t-fast) var(--ease-out-quart);
+}
+
+.session-main:active {
+  background: rgba(253, 230, 138, 0.15);
+  border-radius: var(--claw-radius-xs);
+  transition-duration: var(--t-press);
+}
+
+.tool-entry-toggle {
+  transition:
+    background-color var(--t-fast) var(--ease-out-quart),
+    transform        var(--t-fast) var(--ease-out-quart);
+}
+
+.tool-entry-toggle:active {
+  background: var(--frost-warm);
+  transform: scale(0.985);
+  transition-duration: var(--t-press);
+}
+
+.attachment-trigger {
+  transition:
+    background-color var(--t-fast) var(--ease-out-quart),
+    border-color     var(--t-fast) var(--ease-out-quart),
+    transform        var(--t-fast) var(--ease-out-quart);
+}
+
+.attachment-trigger:active {
+  background: var(--frost-border);
+  transform: scale(0.97);
+  transition-duration: var(--t-press);
+}
+
+.session-delete {
+  transition:
+    color            var(--t-fast) var(--ease-out-quart),
+    border-color     var(--t-fast) var(--ease-out-quart),
+    background-color var(--t-fast) var(--ease-out-quart),
+    transform        var(--t-fast) var(--ease-out-quart),
+    opacity          var(--t-fast) var(--ease-out-quart);
+}
+
+.session-delete:active:not(:disabled) {
+  transform: scale(0.9);
+  transition-duration: var(--t-press);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   11. Global layout transitions
+   ═══════════════════════════════════════════════════════════════════ */
+.app-shell,
+.main-shell,
+.chat-shell,
+.sidebar-list,
+.sidebar-top,
+.chat-header,
+.chat-scroll,
+.settings-grid,
+.setting-card,
+.modal-body,
+.tool-panel,
+.tool-grid,
+.tool-entry,
+.composer-inner,
+.attachments-wrap,
+.attachment-preview-list {
+  transition:
+    padding      var(--t-normal) var(--ease-out-quart),
+    margin       var(--t-normal) var(--ease-out-quart),
+    width        var(--t-normal) var(--ease-out-quart),
+    max-height   var(--t-slow)   var(--ease-out-expo),
+    gap          var(--t-normal) var(--ease-out-quart),
+    opacity      var(--t-normal) var(--ease-out-quart),
+    border-color var(--t-normal) var(--ease-out-quart);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   12. Message entrance
+   ═══════════════════════════════════════════════════════════════════ */
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.988);
+  }
+  55% {
+    opacity: 1;
+    transform: translateY(-1px) scale(1.002);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.message-row {
+  animation: fade-up var(--t-spring) both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   13. Message bubbles
+   ═══════════════════════════════════════════════════════════════════ */
+.message-bubble {
+  border-color: var(--frost-border);
+  box-shadow: none;
+  transition:
+    border-color var(--t-normal) var(--ease-out-quart),
+    box-shadow   var(--t-normal) var(--ease-out-quart);
+}
+
+.message-bubble.user {
+  border-color: color-mix(in srgb, var(--claw-accent) 12%, var(--frost-border));
+}
+
+.message-bubble.assistant {
+  border-color: var(--frost-border);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   14. Borders
+   ═══════════════════════════════════════════════════════════════════ */
+.setting-card      { border-color: var(--frost-border); }
+.toggle-row        { border-color: var(--frost-border); }
+.ui-input          { border-color: var(--frost-border); }
+.composer-textarea { border-color: var(--frost-border); }
+
+.composer-inner {
+  border-color: var(--frost-border);
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   15. Scrollbar, focus rings, status pills
+   ═══════════════════════════════════════════════════════════════════ */
+* {
+  scrollbar-color: rgba(156, 163, 175, 0.35) transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: rgba(156, 163, 175, 0.35);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: rgba(156, 163, 175, 0.55);
+}
+
+.chat-scroll {
+  background: var(--frost-surface);
+}
+
+.ui-btn:focus-visible,
+.ui-input:focus-visible,
+.composer-textarea:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.topbar-status {
+  border-color: var(--frost-border);
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   16. Thinking dots
+   ═══════════════════════════════════════════════════════════════════ */
+@keyframes pulse-dots {
+  0%, 100% {
+    transform: scale(0.65) translateY(0);
+    opacity: 0.4;
+  }
+  35% {
+    transform: scale(1.02) translateY(-2px);
+    opacity: 1;
+  }
+  60% {
+    transform: scale(0.95) translateY(0);
+    opacity: 0.85;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   17. Input focus
+   ═══════════════════════════════════════════════════════════════════ */
+.composer-textarea,
+.ui-input {
+  transition:
+    border-color var(--t-normal) var(--ease-out-quart),
+    box-shadow   var(--t-normal) var(--ease-out-quart);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ✦  End of Frost & Glow v4 layer
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════════
+   18. Chat Physics Layer  —  2D only (no perspective / preserve-3d)
+   ═══════════════════════════════════════════════════════════════════ */
+
+.chat-scroll {
+  position: relative;
+}
+
+.chat-thread-overlay {
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  box-sizing: border-box;
+  z-index: 3;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.chat-thread-outgoing {
+  width: 100%;
+  animation: session-thread-out var(--t-normal) var(--ease-out-expo) both;
+}
+
+@keyframes session-thread-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-36px);
+  }
+}
+
+.chat-thread-main.is-hidden-for-switch-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.chat-thread-main.is-impulsing {
+  animation: stack-lift-push var(--t-spring) var(--ease-out-expo) both;
+}
+
+@keyframes stack-lift-push {
+  0%   { transform: translateY(0); }
+  45%  { transform: translateY(-8px); }
+  100% { transform: none; }
+}
+
+/* ---- Drawer-pop: new message arrives ----
+   from/to only. cubic-bezier spring provides overshoot.
+   translateX/Y only — zero scale/rotate = zero text blur. */
+@keyframes drawer-pop-card {
+  from {
+    opacity: 0;
+    transform: translateX(var(--pop-dx, 0px)) translateY(calc(var(--pop-emerge-y, 36px) * 0.45));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- Session fly-in: cards emerge from drawer on session switch ----
+   Same principle, larger travel distance. */
+@keyframes session-fly-in-card {
+  from {
+    opacity: 0;
+    transform: translateX(var(--pop-dx, 0px)) translateY(var(--pop-emerge-y, 48px));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message-row.drawer-pop,
+.tool-entry.drawer-pop {
+  animation: drawer-pop-card calc(var(--t-spring) * 0.9 * var(--pop-time-scale, 1)) cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+}
+
+.message-row.session-fly-in,
+.tool-entry.session-fly-in {
+  animation: session-fly-in-card calc(var(--t-spring) * 1.0 * var(--pop-time-scale, 1)) cubic-bezier(0.34, 1.56, 0.64, 1) both !important;
+  animation-delay: var(--pop-stagger, 0ms) !important;
+}
+
+/* Tool-panel container: fade-in only (no translateY) so child waterfall
+   animations don't compound with the parent's transform. */
+@keyframes session-fly-in-panel {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.tool-panel.session-fly-in {
+  animation: session-fly-in-panel calc(var(--t-spring) * 0.7) var(--ease-out-expo) both !important;
+}
+
+.composer-shell {
+  position: relative;
+}
+
+.message-row {
+  animation: none;
+}
+
+.stream-bubble {
+  animation: none;
+}
+
+/* ---- Composer drawer kick: recoil when cards launch ---- */
+@keyframes drawer-kick-out {
+  0%   { transform: translateY(0); }
+  45%  { transform: translateY(2px); }
+  100% { transform: none; }
+}
+
+.composer-inner.is-launching {
+  animation: drawer-kick-out 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+@keyframes tool-hinge-expand {
+  0% {
+    opacity: 0;
+    transform: perspective(900px) rotateX(-7deg) translateY(-3px);
+  }
+  56% {
+    opacity: 1;
+    transform: perspective(900px) rotateX(1.5deg) translateY(0);
+  }
+  100% {
+    opacity: 1;
+    transform: perspective(900px) rotateX(0deg) translateY(0);
+  }
+}
+
+.tool-entry.is-expanded .tool-expanded {
+  transform-origin: top center;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  animation: tool-hinge-expand var(--t-normal) var(--ease-out-expo) both;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   19. Animations OFF — modern interaction feedback without motion
+   ═══════════════════════════════════════════════════════════════════
+   When the user disables UI animations via Settings, we:
+     • Strip 3D perspective, tilt transforms, specular glow, coin-flip
+     • Replace complex chat entrance/transition animations with a
+       simple opacity fade (180ms)
+     • Keep hover/active/focus state changes for modern feedback
+     • Preserve border-color / background-color micro-transitions (100ms)
+       so state changes don't feel jarring
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* --- Session card: disable 3D tilt + coin flip + specular glow --- */
+:root[data-animations-off] .sidebar-list {
+  perspective: none;
+}
+
+:root[data-animations-off] .session-card {
+  transform-style: flat;
+  transform: none !important;
+  transition:
+    background-color 100ms ease,
+    border-color     100ms ease,
+    box-shadow       100ms ease;
+}
+
+:root[data-animations-off] .session-card::after {
+  display: none;
+}
+
+:root[data-animations-off] .session-card > .session-main-row {
+  transform: none;
+}
+
+:root[data-animations-off] .session-card.is-flipping,
+:root[data-animations-off] .session-card.flip-from-left,
+:root[data-animations-off] .session-card.flip-from-right {
+  animation: none !important;
+  transform: none !important;
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+/* --- Chat area: simple fade instead of complex entrance --- */
+@keyframes simple-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+:root[data-animations-off] .message-row.drawer-pop,
+:root[data-animations-off] .tool-entry.drawer-pop {
+  animation: simple-fade-in 180ms ease both !important;
+}
+
+:root[data-animations-off] .message-row.session-fly-in,
+:root[data-animations-off] .tool-entry.session-fly-in {
+  animation: simple-fade-in 180ms ease both !important;
+  animation-delay: 0ms !important;
+}
+
+:root[data-animations-off] .tool-panel.session-fly-in {
+  animation: simple-fade-in 180ms ease both !important;
+}
+
+/* Stack lift, thread out — no motion, just instant */
+:root[data-animations-off] .chat-thread-main.is-impulsing {
+  animation: none !important;
+}
+
+:root[data-animations-off] .chat-thread-outgoing {
+  animation: simple-fade-in 150ms ease reverse both;
+}
+
+:root[data-animations-off] .composer-inner.is-launching {
+  animation: none !important;
+}
+
+/* Stream pop bubble — fade only */
+:root[data-animations-off] .stream-bubble {
+  animation: none;
+}
+
+/* --- Menus / Modals: appear instantly --- */
+:root[data-animations-off] .floating-menu,
+:root[data-animations-off] .thinking-menu {
+  animation: none;
+}
+
+:root[data-animations-off] .slash-menu {
+  animation: none;
+}
+
+:root[data-animations-off] .settings-modal,
+:root[data-animations-off] .new-session-modal {
+  animation: none;
+}
+
+:root[data-animations-off] .modal-backdrop {
+  animation: none;
+}
+
+:root[data-animations-off] .menu-scrim {
+  animation: none;
+}
+
+/* Tool expand hinge — fade instead */
+:root[data-animations-off] .tool-entry.is-expanded .tool-expanded {
+  animation: simple-fade-in 120ms ease both;
+}
+
+/* --- Global transitions: near-zero but keep subtle state feedback --- */
+:root[data-animations-off] .app-shell,
+:root[data-animations-off] .main-shell,
+:root[data-animations-off] .chat-shell,
+:root[data-animations-off] .sidebar-list,
+:root[data-animations-off] .sidebar-top,
+:root[data-animations-off] .chat-header,
+:root[data-animations-off] .chat-scroll,
+:root[data-animations-off] .settings-grid,
+:root[data-animations-off] .setting-card,
+:root[data-animations-off] .modal-body,
+:root[data-animations-off] .tool-panel,
+:root[data-animations-off] .tool-grid,
+:root[data-animations-off] .tool-entry,
+:root[data-animations-off] .composer-inner,
+:root[data-animations-off] .attachments-wrap,
+:root[data-animations-off] .attachment-preview-list {
+  transition:
+    padding      0ms,
+    margin       0ms,
+    width        100ms ease,
+    max-height   0ms,
+    gap          0ms,
+    opacity      120ms ease,
+    border-color 100ms ease;
+}
+
+/* Buttons: keep hover/press color feedback, skip motion */
+:root[data-animations-off] .ui-btn {
+  transition:
+    background-color 100ms ease,
+    border-color     100ms ease,
+    color            100ms ease,
+    box-shadow       100ms ease;
+}
+
+:root[data-animations-off] .ui-btn:hover:not(:disabled) {
+  transform: none;
+}
+
+:root[data-animations-off] .ui-btn:active:not(:disabled) {
+  transform: none;
+  background: var(--frost-border);
+}
+
+/* Menu items: keep hover highlight, skip translateX */
+:root[data-animations-off] .floating-item,
+:root[data-animations-off] .thinking-item,
+:root[data-animations-off] .slash-item {
+  transition:
+    background-color 80ms ease,
+    color            80ms ease;
+}
+
+:root[data-animations-off] .floating-item:hover,
+:root[data-animations-off] .slash-item:hover,
+:root[data-animations-off] .thinking-item:hover {
+  transform: none;
+}
+
+:root[data-animations-off] .floating-item:active,
+:root[data-animations-off] .slash-item:active,
+:root[data-animations-off] .thinking-item:active {
+  transform: none;
+}
+
+/* Session list feedback: keep background color change on press */
+:root[data-animations-off] .session-main {
+  transition: background-color 80ms ease;
+}
+
+:root[data-animations-off] .session-delete {
+  transition:
+    color            80ms ease,
+    border-color     80ms ease,
+    background-color 80ms ease;
+}
+
+:root[data-animations-off] .session-delete:active:not(:disabled) {
+  transform: none;
+}
+
+/* Message bubble: keep border/bg transition for state feedback */
+:root[data-animations-off] .message-bubble {
+  transition:
+    border-color     100ms ease,
+    box-shadow       100ms ease;
+}
+
+/* Inputs: keep focus ring feedback */
+:root[data-animations-off] .composer-textarea,
+:root[data-animations-off] .ui-input {
+  transition:
+    border-color 100ms ease,
+    box-shadow   100ms ease;
+}
+
+/* Tool toggle: keep subtle feedback */
+:root[data-animations-off] .tool-entry-toggle {
+  transition: background-color 80ms ease;
+}
+
+:root[data-animations-off] .tool-entry-toggle:active {
+  transform: none;
+}
+
+/* Attachment trigger */
+:root[data-animations-off] .attachment-trigger {
+  transition:
+    background-color 80ms ease,
+    border-color     80ms ease;
+}
+
+:root[data-animations-off] .attachment-trigger:active {
+  transform: none;
 }

@@ -16,7 +16,7 @@ import {
   type Attachment,
 } from "./lib/types.ts";
 import { generateUUID } from "./lib/uuid.ts";
-import { formatCompactTokens, slugify } from "./lib/format.ts";
+import { formatBytes, formatCompactTokens, slugify } from "./lib/format.ts";
 import {
   DEFAULT_UI_SETTINGS,
   type ReplyDoneSoundSource,
@@ -33,6 +33,7 @@ const STORAGE_KEYS = {
   activeUiSettingsScheme: "clawui.ui.settings.activeScheme",
   modelShortcutSchemes: "clawui.model.shortcuts",
   agentSessionShortcutSchemes: "clawui.agent.session.shortcuts",
+  appActionShortcuts: "clawui.app.action.shortcuts",
   lastSession: "clawui.session.last",
 };
 
@@ -128,6 +129,15 @@ type ShortcutCombo = {
   key: string;
 };
 
+type AppActionShortcutId = "toggleSidebar" | "newSession";
+
+type AppActionShortcut = {
+  enabled: boolean;
+  combo: ShortcutCombo;
+};
+
+type AppActionShortcutMap = Record<AppActionShortcutId, AppActionShortcut>;
+
 type ModelShortcutScheme = {
   slot: number;
   combo: ShortcutCombo;
@@ -150,6 +160,7 @@ type AgentSessionShortcutSchemeMap = Partial<Record<string, AgentSessionShortcut
 
 const AGENT_SESSION_SHORTCUT_SLOT_MIN = 1;
 const AGENT_SESSION_SHORTCUT_SLOT_MAX = 5;
+const APP_ACTION_SHORTCUT_IDS: AppActionShortcutId[] = ["toggleSidebar", "newSession"];
 
 function getDefaultAgentSessionShortcutCombo(slot: number): ShortcutCombo {
   const normalizedSlot = Math.max(
@@ -226,9 +237,9 @@ function normalizeAgentSessionShortcutSchemes(
     const signature = shortcutComboSignature(normalizedCombo);
     const combo = usedSignatures.has(signature)
       ? {
-          ...getDefaultAgentSessionShortcutCombo(item.slot),
-          key: getDefaultAgentSessionShortcutKey(item.slot),
-        }
+        ...getDefaultAgentSessionShortcutCombo(item.slot),
+        key: getDefaultAgentSessionShortcutKey(item.slot),
+      }
       : normalizedCombo;
     usedSignatures.add(shortcutComboSignature(combo));
     next[String(item.slot)] = {
@@ -352,13 +363,13 @@ function parseReplyDoneSoundTone(
     return "crystal";
   }
   return value === "glass" ||
-      value === "marimba" ||
-      value === "bell" ||
-      value === "crystal" ||
-      value === "harp" ||
-      value === "wood" ||
-      value === "synth" ||
-      value === "orb"
+    value === "marimba" ||
+    value === "bell" ||
+    value === "crystal" ||
+    value === "harp" ||
+    value === "wood" ||
+    value === "synth" ||
+    value === "orb"
     ? value
     : fallback;
 }
@@ -406,11 +417,7 @@ function formatSessionTimeLabel(date: Date): string {
 }
 
 function resolveSessionLabel(label: string): string {
-  const trimmed = label.trim();
-  if (trimmed) {
-    return trimmed;
-  }
-  return `session-${formatSessionTimeLabel(new Date())}`;
+  return label.trim();
 }
 
 function parseUiSettings(value: unknown): UiSettings {
@@ -687,6 +694,82 @@ function normalizeShortcutCombo(value: unknown): ShortcutCombo | null {
   };
 }
 
+function getDefaultAppActionShortcutCombo(id: AppActionShortcutId): ShortcutCombo {
+  if (id === "toggleSidebar") {
+    return {
+      meta: true,
+      ctrl: false,
+      alt: false,
+      shift: false,
+      key: "d",
+    };
+  }
+  return {
+    meta: true,
+    ctrl: false,
+    alt: false,
+    shift: false,
+    key: "e",
+  };
+}
+
+function getDefaultAppActionShortcut(id: AppActionShortcutId): AppActionShortcut {
+  return {
+    enabled: true,
+    combo: getDefaultAppActionShortcutCombo(id),
+  };
+}
+
+function parseAppActionShortcut(id: AppActionShortcutId, value: unknown): AppActionShortcut {
+  const fallback = getDefaultAppActionShortcut(id);
+  if (!value || typeof value !== "object") {
+    return fallback;
+  }
+  const row = value as Record<string, unknown>;
+  const combo =
+    normalizeShortcutCombo(row.combo) ??
+    normalizeShortcutCombo(row) ??
+    fallback.combo;
+  const enabled = typeof row.enabled === "boolean" ? row.enabled : fallback.enabled;
+  return {
+    enabled,
+    combo,
+  };
+}
+
+function loadAppActionShortcuts(): AppActionShortcutMap {
+  const defaults: AppActionShortcutMap = {
+    toggleSidebar: getDefaultAppActionShortcut("toggleSidebar"),
+    newSession: getDefaultAppActionShortcut("newSession"),
+  };
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.appActionShortcuts);
+    if (!raw) {
+      return defaults;
+    }
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return defaults;
+    }
+    const row = parsed as Record<string, unknown>;
+    const next: AppActionShortcutMap = { ...defaults };
+    for (const id of APP_ACTION_SHORTCUT_IDS) {
+      next[id] = parseAppActionShortcut(id, row[id]);
+    }
+    return next;
+  } catch {
+    return defaults;
+  }
+}
+
+function saveAppActionShortcuts(shortcuts: AppActionShortcutMap) {
+  try {
+    localStorage.setItem(STORAGE_KEYS.appActionShortcuts, JSON.stringify(shortcuts));
+  } catch {
+    // ignore
+  }
+}
+
 function shortcutComboSignature(combo: ShortcutCombo): string {
   return [
     combo.meta ? "1" : "0",
@@ -922,14 +1005,87 @@ function estimateChatSendFrameBytes(params: {
   return new TextEncoder().encode(JSON.stringify(frame)).length;
 }
 
+const TEXT_MIME_PREFIXES = [
+  "text/",
+  "application/json",
+  "application/xml",
+  "application/javascript",
+  "application/typescript",
+  "application/x-yaml",
+  "application/yaml",
+  "application/toml",
+  "application/x-sh",
+  "application/x-python",
+  "application/sql",
+  "application/graphql",
+  "application/ld+json",
+];
+
+const TEXT_FILE_EXTENSIONS = new Set([
+  "txt", "md", "markdown", "json", "jsonl", "json5", "csv", "tsv",
+  "xml", "html", "htm", "svg", "yaml", "yml", "toml", "ini", "cfg", "conf",
+  "js", "jsx", "ts", "tsx", "mjs", "cjs",
+  "py", "rb", "go", "rs", "java", "kt", "c", "h", "cpp", "hpp", "cs",
+  "sh", "bash", "zsh", "fish", "bat", "ps1", "cmd",
+  "sql", "graphql", "gql",
+  "css", "scss", "sass", "less",
+  "vue", "svelte", "astro",
+  "env", "gitignore", "dockerignore", "editorconfig",
+  "log", "diff", "patch",
+  "tex", "bib", "rst", "adoc",
+]);
+
+function isTextMime(mime: string): boolean {
+  const lower = mime.toLowerCase();
+  return TEXT_MIME_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+function isTextFile(attachment: Attachment): boolean {
+  if (isTextMime(attachment.type)) {
+    return true;
+  }
+  const ext = attachment.name.split(".").pop()?.toLowerCase() ?? "";
+  return TEXT_FILE_EXTENSIONS.has(ext);
+}
+
+function decodeBase64Content(dataUrl: string): string {
+  const b64 = extractBase64Content(dataUrl);
+  if (!b64) {
+    return "";
+  }
+  try {
+    return atob(b64);
+  } catch {
+    return "";
+  }
+}
+
+const MAX_EMBEDDED_FILE_CHARS = 100_000;
+
 function buildFileFallbackText(attachments: Attachment[]): string | null {
   const files = attachments.filter((item) => !item.isImage);
   if (files.length === 0) {
     return null;
   }
-  const list = files.slice(0, 3).map((item) => item.name).join(", ");
-  const suffix = files.length > 3 ? ` (+${files.length - 3} more)` : "";
-  return `[Attached file] ${list}${suffix}`;
+
+  const parts: string[] = [];
+  for (const file of files) {
+    if (isTextFile(file)) {
+      let text = decodeBase64Content(file.dataUrl);
+      if (text.length > MAX_EMBEDDED_FILE_CHARS) {
+        text = text.slice(0, MAX_EMBEDDED_FILE_CHARS) + "\n...(truncated)";
+      }
+      if (text) {
+        parts.push(`<file name="${file.name}">\n${text}\n</file>`);
+      } else {
+        parts.push(`[Attached file: ${file.name} (could not decode)]`);
+      }
+    } else {
+      parts.push(`[Attached file: ${file.name} (${formatBytes(file.size)}) — binary file, content not readable by model]`);
+    }
+  }
+
+  return parts.join("\n\n");
 }
 
 function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
@@ -2499,8 +2655,8 @@ function toGatewayHttpBaseCandidates(rawGatewayUrl: string): string[] {
       value.protocol === "wss:"
         ? "https:"
         : value.protocol === "ws:"
-        ? "http:"
-        : value.protocol;
+          ? "http:"
+          : value.protocol;
     if (protocol !== "http:" && protocol !== "https:") {
       return;
     }
@@ -2951,8 +3107,8 @@ function normalizeImageSourceData(rawData: string, mimeType: string): { dataUrl:
       isAbsoluteFsPath(fromProxyPath) || fromProxyPath.startsWith("~")
         ? fromProxyPath
         : getRuntimeWorkspaceDir()
-        ? `${getRuntimeWorkspaceDir()}/${fromProxyPath}`
-        : fromProxyPath;
+          ? `${getRuntimeWorkspaceDir()}/${fromProxyPath}`
+          : fromProxyPath;
     if (isDesktopRuntime()) {
       return { dataUrl: buildDesktopLocalImageUrl(resolvedProxyPath), fromBase64: false };
     }
@@ -3058,10 +3214,10 @@ function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | 
   const role = toolMessage
     ? "assistant"
     : roleRaw === "user"
-    ? "user"
-    : roleRaw === "assistant"
-    ? "assistant"
-    : "system";
+      ? "user"
+      : roleRaw === "assistant"
+        ? "assistant"
+        : "system";
   return {
     id: generateUUID(),
     role,
@@ -3118,6 +3274,9 @@ export default function App() {
   );
   const [agentSessionShortcutSchemes, setAgentSessionShortcutSchemes] =
     useState<AgentSessionShortcutSchemeMap>(() => loadAgentSessionShortcutSchemes());
+  const [appActionShortcuts, setAppActionShortcuts] = useState<AppActionShortcutMap>(
+    () => loadAppActionShortcuts(),
+  );
   const [activeUiSettingsSchemeId, setActiveUiSettingsSchemeId] = useState<string>(
     () => loadStored(STORAGE_KEYS.activeUiSettingsScheme, BUILTIN_UI_SETTINGS_SCHEME_ID),
   );
@@ -3596,6 +3755,33 @@ export default function App() {
     );
   };
 
+  const handleChangeAppActionShortcut = (
+    id: AppActionShortcutId,
+    shortcutRaw: AppActionShortcut,
+  ) => {
+    const combo = normalizeShortcutCombo(shortcutRaw.combo);
+    if (!combo) {
+      return;
+    }
+    const enabled = shortcutRaw.enabled === true;
+    setAppActionShortcuts((prev) => {
+      const current = prev[id];
+      if (
+        current.enabled === enabled &&
+        shortcutComboSignature(current.combo) === shortcutComboSignature(combo)
+      ) {
+        return prev;
+      }
+      return {
+        ...prev,
+        [id]: {
+          enabled,
+          combo,
+        },
+      };
+    });
+  };
+
   const handleSaveModelShortcutScheme = (slotRaw: number) => {
     const slot = normalizeShortcutSlot(slotRaw);
     if (slot === null) {
@@ -3932,6 +4118,11 @@ export default function App() {
       "--claw-animation-duration-scale",
       uiSettings.enableAnimations ? "1" : "0",
     );
+    if (uiSettings.enableAnimations) {
+      document.documentElement.removeAttribute("data-animations-off");
+    } else {
+      document.documentElement.setAttribute("data-animations-off", "");
+    }
     saveUiSettings(uiSettings);
   }, [uiSettings]);
 
@@ -3946,6 +4137,10 @@ export default function App() {
   useEffect(() => {
     saveAgentSessionShortcutSchemes(agentSessionShortcutSchemes);
   }, [agentSessionShortcutSchemes]);
+
+  useEffect(() => {
+    saveAppActionShortcuts(appActionShortcuts);
+  }, [appActionShortcuts]);
 
   useEffect(() => {
     try {
@@ -4298,6 +4493,26 @@ export default function App() {
     [sessionInfo.thinkingLevel],
   );
 
+  const appActionShortcutEntries = useMemo(
+    () => [
+      {
+        id: "toggleSidebar" as const,
+        label: "Toggle Sidebar",
+        enabled: appActionShortcuts.toggleSidebar.enabled,
+        combo: appActionShortcuts.toggleSidebar.combo,
+        shortcutLabel: resolveShortcutLabel(appActionShortcuts.toggleSidebar.combo),
+      },
+      {
+        id: "newSession" as const,
+        label: "New Session",
+        enabled: appActionShortcuts.newSession.enabled,
+        combo: appActionShortcuts.newSession.combo,
+        shortcutLabel: resolveShortcutLabel(appActionShortcuts.newSession.combo),
+      },
+    ],
+    [appActionShortcuts],
+  );
+
   const modelShortcutSlots = useMemo(
     () =>
       Array.from({ length: MODEL_SHORTCUT_SLOT_MAX }, (_, index) => {
@@ -4460,6 +4675,7 @@ export default function App() {
       }
       setThinkingLevel(res.thinkingLevel ?? null);
       const historyMessages: ChatMessage[] = [];
+      const seenContentKeys = new Set<string>();
       let historyTools: ToolItem[] = [];
       if (Array.isArray(res.messages)) {
         let lastTs = Date.now() - Math.max(1, res.messages.length);
@@ -4474,7 +4690,13 @@ export default function App() {
           historyTools = mergeToolItems(historyTools, toolUpdates);
           const parsed = toChatMessageSafe(raw, inferredTs);
           if (parsed) {
-            historyMessages.push(parsed);
+            // Deduplicate messages with identical role + text + similar timestamp
+            const tsKey = Math.floor(parsed.timestamp / 2000); // 2s window
+            const contentKey = `${parsed.role}:${tsKey}:${parsed.text.slice(0, 200)}`;
+            if (!seenContentKeys.has(contentKey)) {
+              seenContentKeys.add(contentKey);
+              historyMessages.push(parsed);
+            }
           }
         }
       }
@@ -4710,7 +4932,7 @@ export default function App() {
       return null;
     }
     const label = resolveSessionLabel(labelInput);
-    const slug = slugify(label) || "session";
+    const slug = label ? (slugify(label) || "chat") : "chat";
     const agentId = resolveTargetAgentId(preferredAgentId);
     const key = `agent:${agentId}:ui:${slug}-${generateUUID().slice(0, 8)}`;
     const primarySessionKey = resolvePrimarySessionKey(agents, lastConfigSnapshotRef.current);
@@ -4720,8 +4942,8 @@ export default function App() {
       const nextSession: GatewaySessionRow = {
         key,
         kind: "direct",
-        label,
-        derivedTitle: label,
+        label: label || undefined,
+        derivedTitle: label || undefined,
         lastMessagePreview: "",
         updatedAt: Date.now(),
       };
@@ -4750,7 +4972,7 @@ export default function App() {
     };
     setCanLoadMoreHistory(false);
     try {
-      await client.request("sessions.patch", { key, label });
+      await client.request("sessions.patch", { key, ...(label ? { label } : {}) });
       if (closeModal) {
         setShowNewSession(false);
       }
@@ -4801,23 +5023,21 @@ export default function App() {
         void handleApplyAgentSessionShortcutScheme(matchedAgentScheme.slot, "shortcut");
         return;
       }
-      if (!event.metaKey || event.altKey || event.ctrlKey) {
-        return;
-      }
-      const key = event.key.toLowerCase();
-      if (key === "d") {
+      const toggleSidebarShortcut = appActionShortcuts.toggleSidebar;
+      if (toggleSidebarShortcut.enabled && isShortcutComboEventMatch(toggleSidebarShortcut.combo, event)) {
         event.preventDefault();
         setSidebarCollapsed((prev) => !prev);
         return;
       }
-      if (key === "e") {
+      const newSessionShortcut = appActionShortcuts.newSession;
+      if (newSessionShortcut.enabled && isShortcutComboEventMatch(newSessionShortcut.combo, event)) {
         event.preventDefault();
         void createSession("", false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes]);
+  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes, appActionShortcuts]);
 
   function buildStatusCard(statusPayload: unknown, configSnapshot: unknown): string {
     const statusRoot: Record<string, unknown> =
@@ -4895,9 +5115,9 @@ export default function App() {
     const contextPercent =
       Number.isFinite(contextUsed) && Number.isFinite(contextLimit) && (contextLimit as number) > 0
         ? Math.max(
-            0,
-            Math.min(999, Math.round(((contextUsed as number) / (contextLimit as number)) * 100)),
-          )
+          0,
+          Math.min(999, Math.round(((contextUsed as number) / (contextLimit as number)) * 100)),
+        )
         : null;
     const compactions =
       statusSession ? getNumberLike(statusSession, ["compactionCount", "compaction_count"]) ?? 0 : 0;
@@ -4917,8 +5137,8 @@ export default function App() {
     const thinkLabel = normalizeThinkingValue(sessionInfo.thinkingLevel);
     const verboseLevel = normalizeModelKey(
       (statusSession ? getString(statusSession, ["verboseLevel"]) : null) ??
-        currentSession?.verboseLevel ??
-        "",
+      currentSession?.verboseLevel ??
+      "",
     );
     const verboseLabel =
       verboseLevel === "full" ? "verbose:full" : verboseLevel === "on" ? "verbose" : null;
@@ -4932,13 +5152,10 @@ export default function App() {
     return [
       `🦞 OpenClaw ${version}${commit ? ` (${commit})` : ""}`,
       `🧠 Model: ${modelLabel}${authLabel ? ` · 🔑 ${authLabel}` : ""}`,
-      `🧮 Tokens: ${
-        Number.isFinite(inputTokens) ? formatCompactTokens(inputTokens) : "?"
+      `🧮 Tokens: ${Number.isFinite(inputTokens) ? formatCompactTokens(inputTokens) : "?"
       } in / ${Number.isFinite(outputTokens) ? formatCompactTokens(outputTokens) : "?"} out`,
-      `📚 Context: ${
-        Number.isFinite(contextUsed) ? formatCompactTokens(contextUsed) : "?"
-      }/${Number.isFinite(contextLimit) ? formatCompactTokens(contextLimit) : "?"}${
-        contextPercent !== null ? ` (${contextPercent}%)` : ""
+      `📚 Context: ${Number.isFinite(contextUsed) ? formatCompactTokens(contextUsed) : "?"
+      }/${Number.isFinite(contextLimit) ? formatCompactTokens(contextLimit) : "?"}${contextPercent !== null ? ` (${contextPercent}%)` : ""
       } · 🧹 Compactions: ${compactions}`,
       `🧵 Session: ${sessionKeyForLine} • updated ${formatAgeFromTimestamp(updatedAt)}`,
       `⚙️ Runtime: ${runtime} · Think: ${thinkLabel}${verboseLabel ? ` · ${verboseLabel}` : ""}`,
@@ -5007,7 +5224,7 @@ export default function App() {
             return null;
           }
           return {
-            type: "image",
+            type: "image" as const,
             mimeType: att.type,
             fileName: att.name,
             content,
@@ -5452,8 +5669,8 @@ export default function App() {
 
   const protocolWarning =
     typeof window !== "undefined" &&
-    window.location.protocol === "https:" &&
-    gatewayUrl.startsWith("ws://")
+      window.location.protocol === "https:" &&
+      gatewayUrl.startsWith("ws://")
       ? "This page is HTTPS. Use wss:// for the Gateway WebSocket."
       : null;
 
@@ -5469,6 +5686,7 @@ export default function App() {
         collapsed={sidebarCollapsed}
         sidebarWidth={uiSettings.sidebarWidth}
         deletingKey={deletingSessionKey}
+        enableAnimations={uiSettings.enableAnimations}
         onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
         onSelect={(key) => setSelectedSessionKey(key)}
         onCreate={() => setShowNewSession(true)}
@@ -5529,6 +5747,8 @@ export default function App() {
         onSaveUiSettingsScheme={handleSaveUiSettingsScheme}
         onOverwriteUiSettingsScheme={handleOverwriteUiSettingsScheme}
         onDeleteUiSettingsScheme={handleDeleteUiSettingsScheme}
+        appActionShortcuts={appActionShortcutEntries}
+        onChangeAppActionShortcut={handleChangeAppActionShortcut}
         modelShortcutSchemes={modelShortcutSlots}
         currentModelForShortcut={currentShortcutModel}
         currentThinkingForShortcut={currentShortcutThinkingLevel}

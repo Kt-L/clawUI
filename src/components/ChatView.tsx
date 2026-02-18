@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Attachment, ChatMessage, ToolItem } from "../lib/types.ts";
 import { renderMarkdown } from "../lib/markdown.ts";
 import { formatBytes, formatCompactTokens, truncate } from "../lib/format.ts";
@@ -51,10 +52,13 @@ type ChatViewProps = {
 const MESSAGE_RENDER_STEP = 60;
 const AUTO_SCROLL_BOTTOM_THRESHOLD = 10;
 const DESKTOP_LOCAL_IMAGE_SCHEME = "claw-local-image";
-
-function attachmentLabel(att: Attachment): string {
-  return `${att.name} (${formatBytes(att.size)})`;
-}
+const SESSION_SWITCH_OUT_MS = 260;
+const SESSION_SWITCH_IN_MS = 800;
+const STACK_LIFT_MS = 380;
+const DRAWER_KICK_MS = 440;
+const POP_MARK_MS = 640;
+const FLY_IN_STAGGER_MS = 38;
+const MAX_FLY_IN_ELEMENTS = 10;
 
 function normalizeMessageTimestamp(timestamp: number): number {
   if (!Number.isFinite(timestamp) || timestamp <= 0) {
@@ -879,9 +883,49 @@ type MessageRowProps = {
   message: ChatMessage;
   showTimestamp: boolean;
   timestampFontSize: number;
+  drawerPop?: boolean;
+  sessionFlyIn?: boolean;
   onOpenImage: (attachment: Attachment) => void;
   onResolveRemoteImage?: (filePath: string) => Promise<string | null>;
 };
+
+type ThreadSnapshot = {
+  sessionKey: string | null;
+  hiddenMessageCount: number;
+  loadingOlder: boolean;
+  displayedMessages: ChatMessage[];
+  toolBeforeFirst: ToolItem[];
+  toolByMessageEntries: Array<[string, ToolItem[]]>;
+  streamText: string | null;
+  thinking: boolean;
+};
+
+type MotionVarsStyle = React.CSSProperties & Record<`--${string}`, string>;
+
+function hashString(value: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function buildMotionVars(id: string): MotionVarsStyle {
+  const hash = hashString(id);
+  const byte = (shift: number) => ((hash >>> shift) & 0xff) / 255;
+  // Horizontal jitter — slight random drift left/right (GPU translate, no blur)
+  const dx = (byte(0) - 0.5) * 6;
+  // Time scale — each card animates at a slightly different speed
+  const timeScale = 0.9 + byte(24) * 0.2;
+  // Emerge Y — how far below the card starts (drawer depth)
+  const emergeY = 42 + byte(4) * 30;
+  return {
+    "--pop-dx": `${dx.toFixed(1)}px`,
+    "--pop-time-scale": `${timeScale.toFixed(3)}`,
+    "--pop-emerge-y": `${Math.round(emergeY)}px`,
+  };
+}
 
 const MessageRow = React.memo(
   function MessageRow(props: MessageRowProps) {
@@ -889,6 +933,8 @@ const MessageRow = React.memo(
     const isUser = message.role === "user";
     const isSystem = message.role === "system";
     const roleLabel = isSystem ? "System" : isUser ? "You" : "Assistant";
+    const rowMotionClass = `${props.drawerPop ? "drawer-pop" : ""} ${props.sessionFlyIn ? "session-fly-in" : ""}`.trim();
+    const motionStyle = useMemo(() => buildMotionVars(message.id), [message.id]);
     const markdownHtml = useMemo(
       () => (message.text ? renderMarkdown(message.text) : ""),
       [message.text],
@@ -896,7 +942,7 @@ const MessageRow = React.memo(
 
     if (isSystem) {
       return (
-        <div className="message-row system">
+        <div className={`message-row system ${rowMotionClass}`} data-message-id={message.id} style={motionStyle}>
           <article
             className="message-bubble system"
             style={{
@@ -924,7 +970,11 @@ const MessageRow = React.memo(
     }
 
     return (
-      <div className={`message-row ${isUser ? "user" : "assistant"}`}>
+      <div
+        className={`message-row ${isUser ? "user" : "assistant"} ${rowMotionClass}`}
+        data-message-id={message.id}
+        style={motionStyle}
+      >
         <article className={`message-bubble ${isUser ? "user" : "assistant"}`}>
           <div className="message-role">{roleLabel}</div>
           {markdownHtml && (
@@ -970,6 +1020,8 @@ const MessageRow = React.memo(
     prev.message === next.message &&
     prev.showTimestamp === next.showTimestamp &&
     prev.timestampFontSize === next.timestampFontSize &&
+    prev.drawerPop === next.drawerPop &&
+    prev.sessionFlyIn === next.sessionFlyIn &&
     prev.onOpenImage === next.onOpenImage &&
     prev.onResolveRemoteImage === next.onResolveRemoteImage,
 );
@@ -982,6 +1034,17 @@ export default function ChatView(props: ChatViewProps) {
   const [visibleMessageCount, setVisibleMessageCount] = useState(MESSAGE_RENDER_STEP);
   const [autoScrollEnabled, setAutoScrollEnabled] = useState(true);
   const [imageLightbox, setImageLightbox] = useState<Attachment | null>(null);
+  const [chatImpulseActive, setChatImpulseActive] = useState(false);
+  const [composerLaunchActive, setComposerLaunchActive] = useState(false);
+  const [sessionTransitionPhase, setSessionTransitionPhase] = useState<"idle" | "out" | "preparing" | "in">("idle");
+  const [outgoingThreadSnapshot, setOutgoingThreadSnapshot] = useState<ThreadSnapshot | null>(null);
+  const [poppingMessageIds, setPoppingMessageIds] = useState<string[]>([]);
+  const [poppingToolIds, setPoppingToolIds] = useState<string[]>([]);
+  const [sessionFlyInMessageIds, setSessionFlyInMessageIds] = useState<string[]>([]);
+  const [sessionFlyInToolIds, setSessionFlyInToolIds] = useState<string[]>([]);
+  const [sessionFlyInToolPanelKeys, setSessionFlyInToolPanelKeys] = useState<string[]>([]);
+  const [sessionFlyInStream, setSessionFlyInStream] = useState(false);
+  const [streamPopActive, setStreamPopActive] = useState(false);
   const lightboxReadTriedRef = useRef<Set<string>>(new Set());
   const isComposingRef = useRef(false);
   const modelMenuRef = useRef<HTMLDivElement | null>(null);
@@ -991,6 +1054,53 @@ export default function ChatView(props: ChatViewProps) {
   const restoreScrollRef = useRef<{ height: number; top: number } | null>(null);
   const olderLoadRequestedRef = useRef(false);
   const prevSessionKeyRef = useRef<string | null>(props.sessionKey);
+  const prevSessionKeyForLayoutRef = useRef<string | null>(props.sessionKey);
+
+  // Pre-paint: hide main thread AND set overlay state synchronously.
+  // useLayoutEffect fires after React commits DOM but BEFORE the browser paints.
+  // By setting overlay state here, React does a synchronous re-render — the overlay
+  // is in the DOM before the first paint. Zero blank frames.
+  useLayoutEffect(() => {
+    if (prevSessionKeyForLayoutRef.current === props.sessionKey) {
+      return;
+    }
+    prevSessionKeyForLayoutRef.current = props.sessionKey;
+    if (!props.uiSettings.enableAnimations) {
+      return;
+    }
+    const container = scrollRef.current;
+    if (!container) {
+      return;
+    }
+    const mainThread = container.querySelector<HTMLElement>(".chat-thread-main");
+    if (mainThread) {
+      mainThread.style.visibility = "hidden";
+    }
+    // Set overlay state synchronously — triggers sync re-render before paint
+    const previousSnapshot = latestThreadSnapshotRef.current;
+    if (previousSnapshot) {
+      setOutgoingThreadSnapshot(previousSnapshot);
+      setSessionTransitionPhase("out");
+    } else {
+      // No snapshot (first visit) — skip out phase, go straight to preparing
+      setSessionTransitionPhase("preparing");
+    }
+  }, [props.sessionKey, props.uiSettings.enableAnimations]);
+  const chatImpulseResetTimerRef = useRef<number | null>(null);
+  const composerLaunchResetTimerRef = useRef<number | null>(null);
+  const popMessageResetTimerRef = useRef<number | null>(null);
+  const popToolResetTimerRef = useRef<number | null>(null);
+  const sessionFlyInResetTimerRef = useRef<number | null>(null);
+  const streamPopResetTimerRef = useRef<number | null>(null);
+  const chatImpulseRafRef = useRef<number | null>(null);
+  const composerLaunchRafRef = useRef<number | null>(null);
+  const sessionFlyInRafRefs = useRef<number[]>([]);
+  const sessionSwitchTimersRef = useRef<number[]>([]);
+  const streamWasActiveRef = useRef(Boolean(props.streamText));
+  const prevMessageIdsRef = useRef<Set<string>>(new Set(props.messages.map((message) => message.id)));
+  const prevToolIdsRef = useRef<Set<string>>(new Set(props.toolItems.map((tool) => tool.id)));
+  const latestThreadSnapshotRef = useRef<ThreadSnapshot | null>(null);
+  const snapshotSessionKeyRef = useRef<string | null>(props.sessionKey);
 
   const displayedMessages = useMemo(() => {
     const total = props.messages.length;
@@ -1035,6 +1145,11 @@ export default function ChatView(props: ChatViewProps) {
     }
     return { beforeFirst, byMessageId };
   }, [orderedTools, displayedMessages]);
+  const poppingMessageIdSet = useMemo(() => new Set(poppingMessageIds), [poppingMessageIds]);
+  const poppingToolIdSet = useMemo(() => new Set(poppingToolIds), [poppingToolIds]);
+  const sessionFlyInMessageIdSet = useMemo(() => new Set(sessionFlyInMessageIds), [sessionFlyInMessageIds]);
+  const sessionFlyInToolIdSet = useMemo(() => new Set(sessionFlyInToolIds), [sessionFlyInToolIds]);
+  const sessionFlyInToolPanelKeySet = useMemo(() => new Set(sessionFlyInToolPanelKeys), [sessionFlyInToolPanelKeys]);
 
   const modelChoices = useMemo(() => {
     const unique = new Map<string, { id: string; name: string; provider: string; contextWindow?: number }>();
@@ -1053,6 +1168,35 @@ export default function ChatView(props: ChatViewProps) {
   const thinkChoices = ["off", "minimal", "low", "medium", "high", "xhigh"];
   const activeThinking = (props.sessionInfo.thinkingLevel ?? "off").toLowerCase();
 
+  useEffect(() => {
+    if (snapshotSessionKeyRef.current !== props.sessionKey) {
+      snapshotSessionKeyRef.current = props.sessionKey;
+      return;
+    }
+    latestThreadSnapshotRef.current = {
+      sessionKey: props.sessionKey,
+      hiddenMessageCount,
+      loadingOlder: props.loadingOlder,
+      displayedMessages: [...displayedMessages],
+      toolBeforeFirst: [...toolTimeline.beforeFirst],
+      toolByMessageEntries: Array.from(toolTimeline.byMessageId.entries()).map(([messageId, tools]) => [
+        messageId,
+        [...tools],
+      ]),
+      streamText: props.streamText,
+      thinking: props.thinking,
+    };
+  }, [
+    hiddenMessageCount,
+    props.loadingOlder,
+    props.sessionKey,
+    displayedMessages,
+    toolTimeline.beforeFirst,
+    toolTimeline.byMessageId,
+    props.streamText,
+    props.thinking,
+  ]);
+
   const autoResizeComposer = useCallback(() => {
     const textarea = composerTextareaRef.current;
     if (!textarea) {
@@ -1070,10 +1214,286 @@ export default function ChatView(props: ChatViewProps) {
     textarea.style.overflowY = contentHeight > maxHeight ? "auto" : "hidden";
   }, []);
 
+  const triggerChatImpulse = useCallback(() => {
+    if (!props.uiSettings.enableAnimations) {
+      return;
+    }
+    if (chatImpulseResetTimerRef.current !== null) {
+      return;
+    }
+    if (chatImpulseRafRef.current !== null) {
+      window.cancelAnimationFrame(chatImpulseRafRef.current);
+      chatImpulseRafRef.current = null;
+    }
+    setChatImpulseActive(false);
+    chatImpulseRafRef.current = window.requestAnimationFrame(() => {
+      chatImpulseRafRef.current = null;
+      setChatImpulseActive(true);
+      chatImpulseResetTimerRef.current = window.setTimeout(() => {
+        setChatImpulseActive(false);
+        chatImpulseResetTimerRef.current = null;
+      }, STACK_LIFT_MS);
+    });
+  }, [props.uiSettings.enableAnimations]);
+
+  const triggerComposerLaunch = useCallback(() => {
+    if (!props.uiSettings.enableAnimations) {
+      return;
+    }
+    if (composerLaunchResetTimerRef.current !== null) {
+      window.clearTimeout(composerLaunchResetTimerRef.current);
+      composerLaunchResetTimerRef.current = null;
+    }
+    if (composerLaunchRafRef.current !== null) {
+      window.cancelAnimationFrame(composerLaunchRafRef.current);
+      composerLaunchRafRef.current = null;
+    }
+    setComposerLaunchActive(false);
+    composerLaunchRafRef.current = window.requestAnimationFrame(() => {
+      composerLaunchRafRef.current = null;
+      setComposerLaunchActive(true);
+      composerLaunchResetTimerRef.current = window.setTimeout(() => {
+        setComposerLaunchActive(false);
+        composerLaunchResetTimerRef.current = null;
+      }, DRAWER_KICK_MS);
+    });
+  }, [props.uiSettings.enableAnimations]);
+
+  const markPoppingMessages = useCallback((ids: string[]) => {
+    if (!props.uiSettings.enableAnimations || ids.length === 0) {
+      return;
+    }
+    setPoppingMessageIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        next.add(id);
+      }
+      return [...next];
+    });
+    if (popMessageResetTimerRef.current !== null) {
+      window.clearTimeout(popMessageResetTimerRef.current);
+    }
+    popMessageResetTimerRef.current = window.setTimeout(() => {
+      setPoppingMessageIds([]);
+      popMessageResetTimerRef.current = null;
+    }, POP_MARK_MS);
+  }, [props.uiSettings.enableAnimations]);
+
+  const markPoppingTools = useCallback((ids: string[]) => {
+    if (!props.uiSettings.enableAnimations || ids.length === 0) {
+      return;
+    }
+    setPoppingToolIds((prev) => {
+      const next = new Set(prev);
+      for (const id of ids) {
+        next.add(id);
+      }
+      return [...next];
+    });
+    if (popToolResetTimerRef.current !== null) {
+      window.clearTimeout(popToolResetTimerRef.current);
+    }
+    popToolResetTimerRef.current = window.setTimeout(() => {
+      setPoppingToolIds([]);
+      popToolResetTimerRef.current = null;
+    }, POP_MARK_MS);
+  }, [props.uiSettings.enableAnimations]);
+
+  const clearSessionSwitchTimers = useCallback(() => {
+    if (sessionSwitchTimersRef.current.length === 0) {
+      return;
+    }
+    for (const timer of sessionSwitchTimersRef.current) {
+      window.clearTimeout(timer);
+    }
+    sessionSwitchTimersRef.current = [];
+  }, []);
+
+  const clearSessionFlyInMarks = useCallback(() => {
+    if (sessionFlyInResetTimerRef.current !== null) {
+      window.clearTimeout(sessionFlyInResetTimerRef.current);
+      sessionFlyInResetTimerRef.current = null;
+    }
+    if (sessionFlyInRafRefs.current.length > 0) {
+      for (const rafId of sessionFlyInRafRefs.current) {
+        window.cancelAnimationFrame(rafId);
+      }
+      sessionFlyInRafRefs.current = [];
+    }
+    setSessionFlyInMessageIds([]);
+    setSessionFlyInToolIds([]);
+    setSessionFlyInToolPanelKeys([]);
+    setSessionFlyInStream(false);
+  }, []);
+
+  const triggerVisibleSessionFlyIn = useCallback((onReady?: () => void) => {
+    if (!props.uiSettings.enableAnimations) {
+      // Still need to clear visibility:hidden from useLayoutEffect
+      const container = scrollRef.current;
+      const mainThread = container?.querySelector<HTMLElement>(".chat-thread-main");
+      if (mainThread) {
+        mainThread.style.visibility = "";
+      }
+      onReady?.();
+      return;
+    }
+    clearSessionFlyInMarks();
+    // Single RAF — React has committed the DOM with new session content by now
+    const raf = window.requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      if (!container) {
+        onReady?.();
+        return;
+      }
+      const mainThread = container.querySelector<HTMLElement>(".chat-thread-main");
+      if (!mainThread) {
+        onReady?.();
+        return;
+      }
+      const viewport = container.getBoundingClientRect();
+      const messageIds = new Set<string>();
+      const toolIds = new Set<string>();
+      const toolPanelKeys = new Set<string>();
+      const isVisible = (el: Element) => {
+        const rect = el.getBoundingClientRect();
+        return rect.bottom > viewport.top + 2 && rect.top < viewport.bottom - 2;
+      };
+
+      // Collect visible elements with position for stagger
+      const visibleEls: Array<{ el: HTMLElement; bottom: number }> = [];
+
+      mainThread.querySelectorAll<HTMLElement>(".message-row[data-message-id]").forEach((el) => {
+        if (!isVisible(el)) {
+          return;
+        }
+        const id = el.dataset.messageId;
+        if (id) {
+          messageIds.add(id);
+          visibleEls.push({ el, bottom: el.getBoundingClientRect().bottom });
+        }
+      });
+      mainThread.querySelectorAll<HTMLElement>(".tool-panel[data-tool-panel-key]").forEach((el) => {
+        if (!isVisible(el)) {
+          return;
+        }
+        const key = el.dataset.toolPanelKey;
+        if (key) {
+          toolPanelKeys.add(key);
+          // Tool panels fade in independently (no stagger, no translateY).
+          // Don't add to visibleEls — children handle the waterfall.
+        }
+      });
+      mainThread.querySelectorAll<HTMLElement>(".tool-entry[data-tool-id]").forEach((el) => {
+        if (!isVisible(el)) {
+          return;
+        }
+        const id = el.dataset.toolId;
+        if (id) {
+          toolIds.add(id);
+          visibleEls.push({ el, bottom: el.getBoundingClientRect().bottom });
+        }
+      });
+      const streamRow = mainThread.querySelector<HTMLElement>(".message-row[data-stream-row='1']");
+      const streamVisible = Boolean(streamRow && isVisible(streamRow));
+      if (streamRow && streamVisible) {
+        visibleEls.push({ el: streamRow, bottom: streamRow.getBoundingClientRect().bottom });
+      }
+
+      // Sort bottom-first (closest to drawer animates first).
+      // All visible elements get animation; stagger is capped at MAX_FLY_IN_ELEMENTS
+      // so elements beyond the cap animate simultaneously at the maximum stagger delay.
+      visibleEls.sort((a, b) => b.bottom - a.bottom);
+      visibleEls.forEach((item, index) => {
+        const stagger = Math.min(index, MAX_FLY_IN_ELEMENTS) * FLY_IN_STAGGER_MS;
+        item.el.style.setProperty("--pop-stagger", `${stagger}ms`);
+      });
+
+      setSessionFlyInMessageIds([...messageIds]);
+      setSessionFlyInToolIds([...toolIds]);
+      setSessionFlyInToolPanelKeys([...toolPanelKeys]);
+      setSessionFlyInStream(streamVisible);
+
+      // Reveal the thread — direct DOM, same frame as fly-in marks.
+      // animated elements start at animation 0% (opacity:0), non-animated appear instantly.
+      mainThread.style.visibility = "";
+      onReady?.();
+
+      // Cleanup after all animations finish
+      const maxStagger = Math.min(visibleEls.length, MAX_FLY_IN_ELEMENTS + 1) * FLY_IN_STAGGER_MS;
+      sessionFlyInResetTimerRef.current = window.setTimeout(() => {
+        setSessionFlyInMessageIds([]);
+        setSessionFlyInToolIds([]);
+        setSessionFlyInToolPanelKeys([]);
+        setSessionFlyInStream(false);
+        visibleEls.forEach((item) => {
+          item.el.style.removeProperty("--pop-stagger");
+        });
+        sessionFlyInResetTimerRef.current = null;
+      }, SESSION_SWITCH_IN_MS + maxStagger + 100);
+    });
+    sessionFlyInRafRefs.current.push(raf);
+  }, [clearSessionFlyInMarks, props.uiSettings.enableAnimations]);
+
+  const sendWithPhysics = useCallback(() => {
+    if (props.connected) {
+      triggerChatImpulse();
+      triggerComposerLaunch();
+    }
+    props.onSend();
+  }, [props.connected, props.onSend, triggerChatImpulse, triggerComposerLaunch]);
+
   useEffect(() => {
     if (prevSessionKeyRef.current === props.sessionKey) {
       return;
     }
+    clearSessionSwitchTimers();
+
+    const previousSnapshot = latestThreadSnapshotRef.current;
+    const hasAnimations = props.uiSettings.enableAnimations;
+
+    if (hasAnimations) {
+      // Overlay + phase already set in useLayoutEffect (before paint).
+      // Here we only set up timers.
+      if (previousSnapshot) {
+        // OUT → PREPARING → IN
+        const outTimer = window.setTimeout(() => {
+          setOutgoingThreadSnapshot(null);
+          setSessionTransitionPhase("preparing");
+          triggerVisibleSessionFlyIn(() => {
+            setSessionTransitionPhase("in");
+            triggerComposerLaunch();
+            const inTimer = window.setTimeout(() => {
+              setSessionTransitionPhase("idle");
+              const ct = scrollRef.current;
+              const mt = ct?.querySelector<HTMLElement>(".chat-thread-main");
+              if (mt) mt.style.visibility = "";
+            }, SESSION_SWITCH_IN_MS);
+            sessionSwitchTimersRef.current.push(inTimer);
+          });
+        }, SESSION_SWITCH_OUT_MS);
+        sessionSwitchTimersRef.current.push(outTimer);
+      } else {
+        // No snapshot (first visit to session) — skip OUT, fly in immediately
+        triggerVisibleSessionFlyIn(() => {
+          setSessionTransitionPhase("in");
+          triggerComposerLaunch();
+          const inTimer = window.setTimeout(() => {
+            setSessionTransitionPhase("idle");
+            const ct = scrollRef.current;
+            const mt = ct?.querySelector<HTMLElement>(".chat-thread-main");
+            if (mt) mt.style.visibility = "";
+          }, SESSION_SWITCH_IN_MS);
+          sessionSwitchTimersRef.current.push(inTimer);
+        });
+      }
+    } else {
+      setOutgoingThreadSnapshot(null);
+      setSessionTransitionPhase("idle");
+      const ct = scrollRef.current;
+      const mt = ct?.querySelector<HTMLElement>(".chat-thread-main");
+      if (mt) mt.style.visibility = "";
+    }
+
     prevSessionKeyRef.current = props.sessionKey;
     setToolExpanded({});
     setVisibleMessageCount(MESSAGE_RENDER_STEP);
@@ -1081,12 +1501,30 @@ export default function ChatView(props: ChatViewProps) {
     setImageLightbox(null);
     setModelMenuOpen(false);
     setThinkingMenuOpen(false);
+    setChatImpulseActive(false);
+    setComposerLaunchActive(false);
+    setPoppingMessageIds([]);
+    setPoppingToolIds([]);
+    setStreamPopActive(false);
+    clearSessionFlyInMarks();
+    prevMessageIdsRef.current = new Set(props.messages.map((message) => message.id));
+    prevToolIdsRef.current = new Set(props.toolItems.map((tool) => tool.id));
+
     const container = scrollRef.current;
     if (!container) {
       return;
     }
     container.scrollTop = container.scrollHeight;
-  }, [props.sessionKey]);
+  }, [
+    props.sessionKey,
+    props.uiSettings.enableAnimations,
+    props.messages,
+    props.toolItems,
+    clearSessionSwitchTimers,
+    clearSessionFlyInMarks,
+    triggerComposerLaunch,
+    triggerVisibleSessionFlyIn,
+  ]);
 
   useEffect(() => {
     const pending = restoreScrollRef.current;
@@ -1105,6 +1543,92 @@ export default function ChatView(props: ChatViewProps) {
     }
     olderLoadRequestedRef.current = false;
   }, [props.loadingOlder]);
+
+  useEffect(() => {
+    if (sessionTransitionPhase !== "idle") {
+      streamWasActiveRef.current = Boolean(props.streamText);
+      return;
+    }
+    const isStreaming = Boolean(props.streamText);
+    if (isStreaming && !streamWasActiveRef.current) {
+      triggerChatImpulse();
+      if (props.uiSettings.enableAnimations) {
+        setStreamPopActive(true);
+        if (streamPopResetTimerRef.current !== null) {
+          window.clearTimeout(streamPopResetTimerRef.current);
+        }
+        streamPopResetTimerRef.current = window.setTimeout(() => {
+          setStreamPopActive(false);
+          streamPopResetTimerRef.current = null;
+        }, POP_MARK_MS);
+      }
+    }
+    if (!isStreaming) {
+      setStreamPopActive(false);
+    }
+    streamWasActiveRef.current = isStreaming;
+  }, [props.streamText, props.uiSettings.enableAnimations, triggerChatImpulse, sessionTransitionPhase]);
+
+  useEffect(() => {
+    const currentIds = props.messages.map((message) => message.id);
+    if (sessionTransitionPhase !== "idle") {
+      prevMessageIdsRef.current = new Set(currentIds);
+      return;
+    }
+    const previousIds = prevMessageIdsRef.current;
+    const addedIds = currentIds.filter((id) => !previousIds.has(id));
+    if (addedIds.length > 0) {
+      markPoppingMessages(addedIds);
+      triggerChatImpulse();
+    }
+    prevMessageIdsRef.current = new Set(currentIds);
+  }, [props.messages, sessionTransitionPhase, markPoppingMessages, triggerChatImpulse]);
+
+  useEffect(() => {
+    const currentIds = props.toolItems.map((tool) => tool.id);
+    if (sessionTransitionPhase !== "idle") {
+      prevToolIdsRef.current = new Set(currentIds);
+      return;
+    }
+    const previousIds = prevToolIdsRef.current;
+    const addedIds = currentIds.filter((id) => !previousIds.has(id));
+    if (addedIds.length > 0) {
+      markPoppingTools(addedIds);
+      triggerChatImpulse();
+    }
+    prevToolIdsRef.current = new Set(currentIds);
+  }, [props.toolItems, sessionTransitionPhase, markPoppingTools, triggerChatImpulse]);
+
+  useEffect(() => {
+    return () => {
+      clearSessionSwitchTimers();
+      clearSessionFlyInMarks();
+      if (chatImpulseResetTimerRef.current !== null) {
+        window.clearTimeout(chatImpulseResetTimerRef.current);
+      }
+      if (composerLaunchResetTimerRef.current !== null) {
+        window.clearTimeout(composerLaunchResetTimerRef.current);
+      }
+      if (popMessageResetTimerRef.current !== null) {
+        window.clearTimeout(popMessageResetTimerRef.current);
+      }
+      if (popToolResetTimerRef.current !== null) {
+        window.clearTimeout(popToolResetTimerRef.current);
+      }
+      if (sessionFlyInResetTimerRef.current !== null) {
+        window.clearTimeout(sessionFlyInResetTimerRef.current);
+      }
+      if (streamPopResetTimerRef.current !== null) {
+        window.clearTimeout(streamPopResetTimerRef.current);
+      }
+      if (chatImpulseRafRef.current !== null) {
+        window.cancelAnimationFrame(chatImpulseRafRef.current);
+      }
+      if (composerLaunchRafRef.current !== null) {
+        window.cancelAnimationFrame(composerLaunchRafRef.current);
+      }
+    };
+  }, [clearSessionFlyInMarks, clearSessionSwitchTimers]);
 
   useEffect(() => {
     const onClickOutside = (event: MouseEvent) => {
@@ -1392,20 +1916,20 @@ export default function ChatView(props: ChatViewProps) {
       event.preventDefault();
       if (showSlashMenu && commandSuggestions.length > 0 && commandName && !commandArgs) {
         if (exactCommand && !requiresArgs) {
-          props.onSend();
+          sendWithPhysics();
           return;
         }
         applySuggestion(commandSuggestions[activeCommand]!);
         return;
       }
       if (showSlashMenu && exactCommand && !requiresArgs) {
-        props.onSend();
+        sendWithPhysics();
         return;
       }
       if (showSlashMenu && requiresArgs && !commandArgs) {
         return;
       }
-      props.onSend();
+      sendWithPhysics();
     }
   };
 
@@ -1413,13 +1937,25 @@ export default function ChatView(props: ChatViewProps) {
     () => (props.streamText ? renderMarkdown(props.streamText) : ""),
     [props.streamText],
   );
+  const streamMotionStyle = useMemo(
+    () => buildMotionVars(`stream-${props.sessionKey ?? "none"}`),
+    [props.sessionKey],
+  );
 
-  const renderToolPanel = (tools: ToolItem[], key: string) => {
+  const renderToolPanel = (tools: ToolItem[], key: string, opts?: { snapshot?: boolean }) => {
     if (tools.length === 0) {
       return null;
     }
+    const snapshotMode = opts?.snapshot ?? false;
+    const panelFlyIn = !snapshotMode && sessionFlyInToolPanelKeySet.has(key);
+    const panelMotionStyle = buildMotionVars(key);
     return (
-      <section key={key} className="tool-panel">
+      <section
+        key={key}
+        className={`tool-panel ${panelFlyIn ? "session-fly-in" : ""}`}
+        data-tool-panel-key={key}
+        style={panelMotionStyle}
+      >
         <div className="tool-panel-header">
           <div className="tool-panel-title" style={{ fontSize: toolMinorFontSize }}>
             Tool Activity ({tools.length})
@@ -1428,16 +1964,29 @@ export default function ChatView(props: ChatViewProps) {
 
         <div className="tool-grid">
           {tools.map((tool) => {
-            const expanded = toolExpanded[tool.id] ?? false;
+            const expanded = snapshotMode ? false : (toolExpanded[tool.id] ?? false);
             const statusLabel = tool.status === "result" ? "done" : "running";
             const outputPreview = (tool.output ?? "").replace(/\s+/g, " ").trim();
             const argsPreview = JSON.stringify(tool.args ?? {}).replace(/\s+/g, " ").trim().slice(0, 120);
             const summary = (outputPreview || argsPreview).slice(0, 120);
+            const drawerPop = !snapshotMode && poppingToolIdSet.has(tool.id);
+            const sessionFlyIn = !snapshotMode && sessionFlyInToolIdSet.has(tool.id);
+            const motionStyle = buildMotionVars(tool.id);
             return (
-              <article key={tool.id} className="tool-entry" style={{ fontSize: toolFontSize }}>
+              <article
+                key={tool.id}
+                className={`tool-entry ${expanded ? "is-expanded" : ""} ${drawerPop ? "drawer-pop" : ""} ${sessionFlyIn ? "session-fly-in" : ""}`}
+                data-tool-id={tool.id}
+                style={{ ...motionStyle, fontSize: toolFontSize }}
+              >
                 <button
                   type="button"
-                  onClick={() => setToolExpanded((prev) => ({ ...prev, [tool.id]: !expanded }))}
+                  onClick={() => {
+                    if (snapshotMode) {
+                      return;
+                    }
+                    setToolExpanded((prev) => ({ ...prev, [tool.id]: !expanded }));
+                  }}
                   className="tool-entry-toggle"
                   aria-expanded={expanded}
                 >
@@ -1479,9 +2028,14 @@ export default function ChatView(props: ChatViewProps) {
     );
   };
 
+  const outgoingToolTimelineByMessage = useMemo(
+    () => new Map(outgoingThreadSnapshot?.toolByMessageEntries ?? []),
+    [outgoingThreadSnapshot],
+  );
+
   return (
     <section className="claw-chat-area chat-shell">
-      <header className="chat-header">
+      <header className={`chat-header ${modelMenuOpen || thinkingMenuOpen ? "menu-layer-active" : ""}`}>
         <div className="chat-header-main">
           <div className="chat-brand-title">ClawUI</div>
           <div className="topbar-status">
@@ -1491,7 +2045,7 @@ export default function ChatView(props: ChatViewProps) {
         </div>
 
         <div className="chat-header-actions">
-          <div className="relative" ref={modelMenuRef}>
+          <div className={`relative ${modelMenuOpen ? "menu-open-ctx" : ""}`} ref={modelMenuRef}>
             <button
               type="button"
               onClick={() => setModelMenuOpen((prev) => !prev)}
@@ -1545,7 +2099,83 @@ export default function ChatView(props: ChatViewProps) {
       </header>
 
       <div ref={scrollRef} onScroll={onScroll} className="chat-scroll">
-        <div className="chat-thread" style={{ maxWidth: "var(--claw-content-width)", gap: "var(--claw-message-gap)" }}>
+        {outgoingThreadSnapshot && sessionTransitionPhase === "out" && (
+          <div className="chat-thread-overlay" aria-hidden="true">
+            <div
+              key={`outgoing-${outgoingThreadSnapshot.sessionKey ?? "none"}`}
+              className="chat-thread chat-thread-outgoing"
+              style={{ maxWidth: "var(--claw-content-width)", gap: "var(--claw-message-gap)" }}
+            >
+              {(outgoingThreadSnapshot.hiddenMessageCount > 0 || outgoingThreadSnapshot.loadingOlder) && (
+                <div className="history-hint">
+                  {outgoingThreadSnapshot.loadingOlder
+                    ? "Loading older messages..."
+                    : `${outgoingThreadSnapshot.hiddenMessageCount} older messages available. Scroll up to load.`}
+                </div>
+              )}
+
+              {outgoingThreadSnapshot.displayedMessages.length === 0 && (
+                <article className="empty-state">
+                  <div className="empty-state-title">Start a new session</div>
+                  <div className="empty-state-copy">
+                    Ask OpenClaw anything. Use slash commands like /model, /status, /usage.
+                  </div>
+                </article>
+              )}
+
+              {props.uiSettings.showToolActivity &&
+                renderToolPanel(outgoingThreadSnapshot.toolBeforeFirst, "snapshot-tool-before-first", { snapshot: true })}
+
+              {outgoingThreadSnapshot.displayedMessages.map((msg) => (
+                <React.Fragment key={`snapshot-${msg.id}`}>
+                  <MessageRow
+                    message={msg}
+                    showTimestamp={props.uiSettings.showMessageTimestamp}
+                    timestampFontSize={props.uiSettings.messageTimestampFontSize}
+                    drawerPop={false}
+                    onOpenImage={setImageLightbox}
+                    onResolveRemoteImage={props.onResolveRemoteImage}
+                  />
+                  {props.uiSettings.showToolActivity &&
+                    renderToolPanel(outgoingToolTimelineByMessage.get(msg.id) ?? [], `snapshot-tool-after-${msg.id}`, {
+                      snapshot: true,
+                    })}
+                </React.Fragment>
+              ))}
+
+              {outgoingThreadSnapshot.streamText && (
+                <div className="message-row assistant">
+                  <article className="message-bubble assistant stream-bubble">
+                    <div className="message-role">Assistant</div>
+                    <div
+                      className="markdown"
+                      dangerouslySetInnerHTML={{ __html: renderMarkdown(outgoingThreadSnapshot.streamText) }}
+                    />
+                  </article>
+                </div>
+              )}
+
+              {!outgoingThreadSnapshot.streamText && outgoingThreadSnapshot.thinking && (
+                <div className="message-row assistant">
+                  <article className="message-bubble assistant thinking-indicator">
+                    <span className="thinking-label">Thinking</span>
+                    <span className="thinking-dots" aria-hidden="true">
+                      <span className="dot" />
+                      <span className="dot" />
+                      <span className="dot" />
+                    </span>
+                  </article>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        <div
+          key={`main-${props.sessionKey ?? "none"}`}
+          className={`chat-thread chat-thread-main ${chatImpulseActive ? "is-impulsing" : ""} ${(sessionTransitionPhase === "out" || sessionTransitionPhase === "preparing") ? "is-hidden-for-switch-out" : ""}`}
+          style={{ maxWidth: "var(--claw-content-width)", gap: "var(--claw-message-gap)" }}
+        >
           {(hiddenMessageCount > 0 || props.loadingOlder) && (
             <div className="history-hint">
               {props.loadingOlder
@@ -1571,6 +2201,8 @@ export default function ChatView(props: ChatViewProps) {
                 message={msg}
                 showTimestamp={props.uiSettings.showMessageTimestamp}
                 timestampFontSize={props.uiSettings.messageTimestampFontSize}
+                drawerPop={poppingMessageIdSet.has(msg.id)}
+                sessionFlyIn={sessionFlyInMessageIdSet.has(msg.id)}
                 onOpenImage={setImageLightbox}
                 onResolveRemoteImage={props.onResolveRemoteImage}
               />
@@ -1580,7 +2212,11 @@ export default function ChatView(props: ChatViewProps) {
           ))}
 
           {props.streamText && (
-            <div className="message-row assistant">
+            <div
+              className={`message-row assistant ${streamPopActive ? "drawer-pop" : ""} ${sessionFlyInStream ? "session-fly-in" : ""}`}
+              data-stream-row="1"
+              style={streamMotionStyle}
+            >
               <article className="message-bubble assistant stream-bubble">
                 <div className="message-role">Assistant</div>
                 <div
@@ -1607,7 +2243,46 @@ export default function ChatView(props: ChatViewProps) {
       </div>
 
       <footer className="composer-shell">
-        <div className="composer-inner">
+        <div
+          className={`composer-inner ${composerLaunchActive ? "is-launching" : ""}`}
+          onDragOver={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const files = Array.from(e.dataTransfer?.files ?? []);
+            if (files.length === 0) {
+              return;
+            }
+            const reads: Promise<Attachment>[] = files.map((file) => {
+              return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  const dataUrl = typeof reader.result === "string" ? reader.result : "";
+                  resolve({
+                    id: `drop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
+                    name: file.name,
+                    size: file.size,
+                    type: file.type || "application/octet-stream",
+                    dataUrl,
+                    isImage: file.type.startsWith("image/"),
+                  });
+                };
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(file);
+              });
+            });
+            Promise.all(reads)
+              .then((next) => {
+                props.onAttachmentsChange([...props.attachments, ...next]);
+              })
+              .catch(() => {
+                // ignore
+              });
+          }}
+        >
           {!props.connected && (
             <div className="composer-warning">
               {props.disabledReason || "Gateway disconnected. Update settings to reconnect."}
@@ -1626,6 +2301,51 @@ export default function ChatView(props: ChatViewProps) {
                 isComposingRef.current = false;
               }}
               onKeyDown={onKeyDown}
+              onPaste={(e) => {
+                const items = e.clipboardData?.items;
+                if (!items) {
+                  return;
+                }
+                const imageFiles: File[] = [];
+                for (let i = 0; i < items.length; i += 1) {
+                  const item = items[i];
+                  if (item && item.kind === "file" && item.type.startsWith("image/")) {
+                    const file = item.getAsFile();
+                    if (file) {
+                      imageFiles.push(file);
+                    }
+                  }
+                }
+                if (imageFiles.length === 0) {
+                  return;
+                }
+                e.preventDefault();
+                const reads: Promise<Attachment>[] = imageFiles.map((file) => {
+                  return new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const dataUrl = typeof reader.result === "string" ? reader.result : "";
+                      resolve({
+                        id: `paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${file.name}`,
+                        name: file.name || `pasted-image.${file.type.split("/")[1] || "png"}`,
+                        size: file.size,
+                        type: file.type || "image/png",
+                        dataUrl,
+                        isImage: true,
+                      });
+                    };
+                    reader.onerror = () => reject(reader.error);
+                    reader.readAsDataURL(file);
+                  });
+                });
+                Promise.all(reads)
+                  .then((next) => {
+                    props.onAttachmentsChange([...props.attachments, ...next]);
+                  })
+                  .catch(() => {
+                    // ignore
+                  });
+              }}
               placeholder="Type a message or /command"
               className="composer-textarea"
               style={{
@@ -1653,16 +2373,30 @@ export default function ChatView(props: ChatViewProps) {
           </div>
 
           {props.attachments.length > 0 && (
-            <div className="attachment-chip-list">
+            <div className="attachment-preview-list">
               {props.attachments.map((att) => (
-                <div key={att.id} className="attachment-chip">
-                  <span>{attachmentLabel(att)}</span>
+                <div key={att.id} className={`attachment-preview-item ${att.isImage ? "is-image" : "is-file"}`}>
+                  {att.isImage ? (
+                    <div className="attachment-preview-thumb">
+                      <img src={att.dataUrl} alt={att.name} className="attachment-preview-img" />
+                    </div>
+                  ) : (
+                    <div className="attachment-preview-file-icon">
+                      <span className="attachment-preview-file-ext">
+                        {att.name.split(".").pop()?.toUpperCase().slice(0, 4) || "FILE"}
+                      </span>
+                    </div>
+                  )}
+                  <div className="attachment-preview-info">
+                    <span className="attachment-preview-name" title={att.name}>{truncate(att.name, 20)}</span>
+                    <span className="attachment-preview-size">{formatBytes(att.size)}</span>
+                  </div>
                   <button
                     type="button"
                     onClick={() =>
                       props.onAttachmentsChange(props.attachments.filter((item) => item.id !== att.id))
                     }
-                    className="attachment-chip-remove"
+                    className="attachment-preview-remove"
                     aria-label={`Remove ${att.name}`}
                   >
                     ×
@@ -1719,7 +2453,7 @@ export default function ChatView(props: ChatViewProps) {
 
               <button
                 type="button"
-                onClick={props.onSend}
+                onClick={sendWithPhysics}
                 disabled={!props.connected}
                 className="ui-btn ui-btn-primary"
                 style={{
@@ -1772,7 +2506,7 @@ export default function ChatView(props: ChatViewProps) {
               <span>Out: {formatCompactTokens(props.sessionInfo.outputTokens)}</span>
               <span>Total: {formatCompactTokens(props.sessionInfo.totalTokens)}</span>
 
-              <div className="relative" ref={thinkingMenuRef}>
+              <div className={`relative ${thinkingMenuOpen ? "menu-open-ctx" : ""}`} ref={thinkingMenuRef}>
                 <button
                   type="button"
                   onClick={() => setThinkingMenuOpen((prev) => !prev)}
@@ -1853,6 +2587,24 @@ export default function ChatView(props: ChatViewProps) {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Scrim: portaled to document.body so it paints below menus.
+          Dims the background when a dropdown menu is open. */}
+      {(modelMenuOpen || thinkingMenuOpen || (showSlashMenu && commandSuggestions.length > 0)) && createPortal(
+        <div
+          className="menu-scrim"
+          onClick={() => {
+            setModelMenuOpen(false);
+            setThinkingMenuOpen(false);
+            // For slash menu: blur the textarea so the user can interact with the page
+            if (showSlashMenu) {
+              const ta = document.querySelector(".composer-textarea") as HTMLElement | null;
+              if (ta) ta.blur();
+            }
+          }}
+        />,
+        document.body
       )}
     </section>
   );

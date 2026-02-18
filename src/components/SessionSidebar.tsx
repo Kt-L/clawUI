@@ -1,6 +1,7 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GatewaySessionRow } from "../lib/types.ts";
 import { formatTime } from "../lib/format.ts";
+import { useCardTilt } from "../hooks/useCardTilt.ts";
 
 export type SessionSidebarProps = {
   sessions: GatewaySessionRow[];
@@ -8,6 +9,7 @@ export type SessionSidebarProps = {
   collapsed: boolean;
   sidebarWidth: number;
   deletingKey?: string | null;
+  enableAnimations: boolean;
   onToggleCollapse: () => void;
   onSelect: (key: string) => void;
   onCreate: () => void;
@@ -19,6 +21,27 @@ export type SessionSidebarProps = {
 export default function SessionSidebar(props: SessionSidebarProps) {
   const [query, setQuery] = useState("");
   const requestingMoreRef = useRef(false);
+  const { onMouseMove: tiltMove, onMouseLeave: tiltLeave } = useCardTilt();
+
+  /** Trigger side-based flip from the clicked half (left/right). */
+  const flipCard = useCallback((el: HTMLElement, clientX: number) => {
+    const rect = el.getBoundingClientRect();
+    const normX = (clientX - rect.left) / rect.width; // 0..1
+    const fromRight = normX > 0.5;
+
+    // Reset tilt so flip starts from a physically stable baseline.
+    el.style.setProperty("--tilt-x", "0deg");
+    el.style.setProperty("--tilt-y", "0deg");
+    el.style.setProperty("--lift", "0px");
+
+    el.classList.remove("is-flipping", "flip-from-left", "flip-from-right");
+    void el.offsetWidth; // force reflow
+    el.classList.add("is-flipping", fromRight ? "flip-from-right" : "flip-from-left");
+
+    el.addEventListener("animationend", () => {
+      el.classList.remove("is-flipping", "flip-from-left", "flip-from-right");
+    }, { once: true });
+  }, []);
 
   const filtered = useMemo(() => {
     if (!query.trim()) {
@@ -108,19 +131,30 @@ export default function SessionSidebar(props: SessionSidebarProps) {
           const isActive = props.selectedKey === session.key;
           const isDeleting = props.deletingKey === session.key;
           const hasPendingDelete = Boolean(props.deletingKey);
-          const title = session.label ?? session.derivedTitle ?? session.key;
+          const title = session.label || session.derivedTitle || session.key;
           const preview = session.lastMessagePreview ?? "";
           return (
             <article
               key={session.key}
               className={`session-card ${isActive ? "is-active" : ""}`}
+              onMouseMove={props.enableAnimations ? (e) => tiltMove(session.key, e) : undefined}
+              onMouseLeave={props.enableAnimations ? (e) => tiltLeave(session.key, e) : undefined}
+              onClick={(e) => {
+                // Don't trigger if clicking the delete button
+                if ((e.target as HTMLElement).closest(".session-delete")) return;
+                const cardEl = e.currentTarget;
+                const clickX = e.clientX;
+                props.onSelect(session.key);
+                if (props.enableAnimations) {
+                  requestAnimationFrame(() => {
+                    flipCard(cardEl, clickX);
+                  });
+                }
+              }}
+              style={{ cursor: "pointer" }}
             >
               <div className="session-main-row">
-                <button
-                  type="button"
-                  onClick={() => props.onSelect(session.key)}
-                  className="session-main"
-                >
+                <div className="session-main">
                   <span className={`session-dot ${isActive ? "is-active" : ""}`} />
                   {!props.collapsed && (
                     <span className="session-copy">
@@ -143,7 +177,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
                       </span>
                     </span>
                   )}
-                </button>
+                </div>
 
                 {!props.collapsed && (
                   <button

@@ -6,7 +6,8 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
-  <a href="#desktop">Desktop App</a> •
+  <a href="#demo">Demo</a> •
+  <a href="#desktop-app">Desktop App</a> •
   <a href="#configuration">Configuration</a> •
   <a href="LICENSE">License</a>
 </p>
@@ -36,7 +37,9 @@ Open the URL printed by Vite (default `http://localhost:5178`), go to **Settings
 - Streaming AI responses with live thinking animation
 - Markdown, syntax-highlighted code blocks, LaTeX math (KaTeX), and tables
 - Tool call timeline — collapsed by default, expandable for full args & output
-- File & image attachments with auto-compression and size estimation
+- File & image attachments with visual preview cards, auto-compression, and size estimation
+- Smart text file embedding — text-based attachments (source code, config, markdown, etc.) are decoded and sent inline as `<file>` tags for better model context; binary files are labeled accordingly
+- OpenClaw envelope stripping — user messages are automatically cleaned of gateway-injected metadata (system events, conversation info, timestamps) for a cleaner chat display
 - Reply-done sound notifications (built-in tones or custom audio)
 
 **Sessions**
@@ -44,25 +47,39 @@ Open the URL printed by Vite (default `http://localhost:5178`), go to **Settings
 - History pagination with incremental loading
 - Multi-agent support — create sessions bound to specific agents
 
+**Frost & Glow Visual Theme**
+- Glassmorphism-inspired design with warm-yellow accent palette and refined design tokens
+- 3D perspective tilt on session cards — hover to see the entire card (border, background, shadow) respond to cursor position with specular glow highlights
+- Directional coin-flip animation on session card click — the card flips from the side you clicked
+- Staggered "drawer pop" fly-in animations when switching sessions
+- Composer launch impulse and chat thread physics on send
+- Smooth sidebar slide-in/collapse, menu entrance, and modal backdrop transitions
+
 **Slash Commands**
 - `/status` `/models` `/model` `/think` `/compact` `/abort` `/new` `/reset` and more
 - Autocomplete popup with keyboard navigation (↑↓ + Enter/Tab)
 
 **Shortcuts**
-- `Ctrl/⌘ + D` — toggle sidebar
-- `Ctrl/⌘ + E` — new session
+- Configurable app action shortcuts — Toggle Sidebar and New Session with full modifier customization (Cmd/Ctrl/Alt/Shift + key), enable/disable per action
 - Up to 5 custom model shortcuts (model + thinking level combo)
 - Up to 5 custom agent-session shortcuts
 
 **UI Customization**
 - Font family, size, line height, content width
 - Color schemes and themes
+- Animation toggle — enable or disable all motion effects
 - Settings schemes — save & switch between presets
 - All changes apply instantly, persisted in localStorage
 
 ![Tool Calls & Sidebar](./UIpreview2.png)
 
-## Desktop
+## Demo
+
+https://github.com/user-attachments/assets/6a96e9b7-3093-4ac9-a479-2d337d57a187
+
+> *Short walkthrough of the UI*
+
+## Desktop App
 
 ClawUI supports Electron packaging for a native desktop experience with local image resolution.
 
@@ -73,6 +90,16 @@ npm run desktop:dist:mac      # unsigned macOS .dmg + .zip
 ```
 
 See [DESKTOP.md](DESKTOP.md) for details on macOS Gatekeeper and first-launch instructions.
+
+### Download from Releases
+
+Pre-built **unsigned** macOS desktop build is available on the [Releases](https://github.com/Kt-L/clawUI/releases) page.
+
+> ⚠️ **This build is unsigned.** macOS Gatekeeper will block the app on first launch. To open it:
+> 1. Right-click the app and choose **Open**.
+> 2. Confirm the security prompt once.
+>
+> After the first launch, the app will open normally.
 
 ## Configuration
 
@@ -89,6 +116,7 @@ Gateway connection settings (URL, token, password) are configured in the UI unde
 ```
 src/           React app, components, and client logic
 src/lib/       Gateway client, markdown renderer, UI settings, utilities
+src/hooks/     Custom React hooks (e.g. useCardTilt for 3D tilt effect)
 electron/      Desktop main/preload bridge, local image protocol
 scripts/       Runtime and environment checks
 ```

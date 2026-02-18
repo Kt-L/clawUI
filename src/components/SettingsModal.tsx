@@ -1,6 +1,16 @@
 import React from "react";
 import { DEFAULT_UI_SETTINGS, type UiSettings } from "../lib/ui-settings.ts";
 
+type ShortcutCombo = {
+  meta: boolean;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  key: string;
+};
+
+type AppActionShortcutId = "toggleSidebar" | "newSession";
+
 type SettingsModalProps = {
   open: boolean;
   onClose: () => void;
@@ -18,25 +28,27 @@ type SettingsModalProps = {
   onSaveUiSettingsScheme: (name: string) => void;
   onOverwriteUiSettingsScheme: (schemeId: string) => void;
   onDeleteUiSettingsScheme: (schemeId: string) => void;
+  appActionShortcuts: Array<{
+    id: AppActionShortcutId;
+    label: string;
+    enabled: boolean;
+    combo: ShortcutCombo;
+    shortcutLabel: string;
+  }>;
+  onChangeAppActionShortcut: (
+    id: AppActionShortcutId,
+    shortcut: {
+      enabled: boolean;
+      combo: ShortcutCombo;
+    },
+  ) => void;
   modelShortcutSchemes: Array<{
     slot: number;
-    combo: {
-      meta: boolean;
-      ctrl: boolean;
-      alt: boolean;
-      shift: boolean;
-      key: string;
-    };
+    combo: ShortcutCombo;
     shortcutLabel: string;
     scheme: {
       slot: number;
-      combo: {
-        meta: boolean;
-        ctrl: boolean;
-        alt: boolean;
-        shift: boolean;
-        key: string;
-      };
+      combo: ShortcutCombo;
       model: string;
       thinkingLevel: string;
       updatedAt: number;
@@ -48,13 +60,7 @@ type SettingsModalProps = {
   onApplyModelShortcutScheme: (slot: number) => void;
   onChangeModelShortcutSchemeCombo: (
     slot: number,
-    combo: {
-      meta: boolean;
-      ctrl: boolean;
-      alt: boolean;
-      shift: boolean;
-      key: string;
-    },
+    combo: ShortcutCombo,
   ) => void;
   onDeleteModelShortcutScheme: (slot: number) => void;
   onPreviewReplyDoneSound: (next: {
@@ -66,23 +72,11 @@ type SettingsModalProps = {
   }) => void;
   agentSessionShortcutSchemes: Array<{
     slot: number;
-    combo: {
-      meta: boolean;
-      ctrl: boolean;
-      alt: boolean;
-      shift: boolean;
-      key: string;
-    };
+    combo: ShortcutCombo;
     shortcutLabel: string;
     scheme: {
       slot: number;
-      combo: {
-        meta: boolean;
-        ctrl: boolean;
-        alt: boolean;
-        shift: boolean;
-        key: string;
-      };
+      combo: ShortcutCombo;
       agentId: string;
       agentLabel: string;
       updatedAt: number;
@@ -94,13 +88,7 @@ type SettingsModalProps = {
   onApplyAgentSessionShortcutScheme: (slot: number) => void;
   onChangeAgentSessionShortcutSchemeCombo: (
     slot: number,
-    combo: {
-      meta: boolean;
-      ctrl: boolean;
-      alt: boolean;
-      shift: boolean;
-      key: string;
-    },
+    combo: ShortcutCombo,
   ) => void;
   onDeleteAgentSessionShortcutScheme: (slot: number) => void;
 };
@@ -504,6 +492,118 @@ export default function SettingsModal(props: SettingsModalProps) {
                   >
                     Delete Selected
                   </button>
+                </div>
+              </div>
+            </section>
+
+            <section className="setting-card setting-card-wide">
+              <div className="setting-head">
+                <h3 className="setting-title">App Action Shortcuts</h3>
+              </div>
+              <div className="setting-fields">
+                <div className="field-block">
+                  <span className="field-label">
+                    Configure global shortcuts for built-in app actions.
+                  </span>
+                  <span className="field-label">
+                    Supports Cmd/Control/Option/Shift + letter or number.
+                  </span>
+                </div>
+                <div className="shortcut-scheme-list">
+                  {props.appActionShortcuts.map((entry) => {
+                    const combo = entry.combo;
+                    const updateCombo = (patch: Partial<typeof combo>) => {
+                      props.onChangeAppActionShortcut(entry.id, {
+                        enabled: entry.enabled,
+                        combo: { ...combo, ...patch },
+                      });
+                    };
+                    return (
+                      <div key={entry.id} className="shortcut-scheme-row">
+                        <div className="shortcut-scheme-summary">
+                          <div className="shortcut-scheme-top">
+                            <span className="shortcut-scheme-key">{entry.label}</span>
+                            <label className="field-inline shortcut-key-config">
+                              <span className="field-label">Key</span>
+                              <input
+                                value={combo.key.toUpperCase()}
+                                onChange={(e) => {
+                                  const normalized = normalizeShortcutKeyInput(e.target.value);
+                                  if (normalized) {
+                                    updateCombo({ key: normalized });
+                                  }
+                                }}
+                                onKeyDown={(e) => {
+                                  const normalized = normalizeShortcutEventKey(e.code, e.key);
+                                  if (!normalized) {
+                                    return;
+                                  }
+                                  e.preventDefault();
+                                  updateCombo({ key: normalized });
+                                }}
+                                className="ui-input compact shortcut-key-capture"
+                                maxLength={1}
+                                spellCheck={false}
+                                autoComplete="off"
+                                autoCapitalize="off"
+                                title="Focus and press a letter or number key"
+                                aria-label={`${entry.label} shortcut key`}
+                              />
+                            </label>
+                          </div>
+                          <div className="shortcut-combo-editor">
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={entry.enabled}
+                                onChange={(e) =>
+                                  props.onChangeAppActionShortcut(entry.id, {
+                                    enabled: e.target.checked,
+                                    combo,
+                                  })}
+                              />
+                              Enabled
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.meta}
+                                onChange={(e) => updateCombo({ meta: e.target.checked })}
+                              />
+                              Cmd
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.ctrl}
+                                onChange={(e) => updateCombo({ ctrl: e.target.checked })}
+                              />
+                              Control
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.alt}
+                                onChange={(e) => updateCombo({ alt: e.target.checked })}
+                              />
+                              Option
+                            </label>
+                            <label className="shortcut-modifier-toggle">
+                              <input
+                                type="checkbox"
+                                checked={combo.shift}
+                                onChange={(e) => updateCombo({ shift: e.target.checked })}
+                              />
+                              Shift
+                            </label>
+                          </div>
+                          <span className="field-label">
+                            {entry.enabled ? entry.shortcutLabel : `${entry.shortcutLabel} (disabled)`}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </section>

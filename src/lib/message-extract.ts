@@ -2,6 +2,16 @@ const THINKING_TAGS = /<\s*think(?:ing)?\s*>[\s\S]*?<\s*\/\s*think(?:ing)?\s*>/g
 const AUDIO_TAG_RE = /\[\[\s*audio_as_voice\s*\]\]/gi;
 const REPLY_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]/gi;
 
+// OpenClaw injects envelope metadata into user messages:
+//   System: [timestamp] ...  (system events)
+//   Conversation info (untrusted metadata): ```json { ... } ```
+//   [Day YYYY-MM-DD HH:MM TZ] actual user text
+// Strip everything up to and including the envelope, leaving only the user's real content.
+const OPENCLAW_ENVELOPE_RE =
+  /^[\s\S]*?Conversation info \(untrusted metadata\):\s*```json?\s*\{[\s\S]*?\}\s*```\s*/i;
+const TIMESTAMP_PREFIX_RE =
+  /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?:\s+[^\]]+)?\]\s*/i;
+
 function stripInlineDirectives(text: string): string {
   return text
     .replace(AUDIO_TAG_RE, " ")
@@ -19,6 +29,15 @@ function sanitizeAssistantText(text: string): string {
   return stripInlineDirectives(stripThinkingTags(text));
 }
 
+function sanitizeUserText(text: string): string {
+  let cleaned = text;
+  // Strip OpenClaw envelope: system events + conversation info metadata block
+  cleaned = cleaned.replace(OPENCLAW_ENVELOPE_RE, "");
+  // Strip timestamp prefix like [Wed 2026-02-18 19:21 GMT+1]
+  cleaned = cleaned.replace(TIMESTAMP_PREFIX_RE, "");
+  return cleaned.trim();
+}
+
 export function extractText(message: unknown): string | null {
   if (!message || typeof message !== "object") {
     return null;
@@ -27,7 +46,7 @@ export function extractText(message: unknown): string | null {
   const role = typeof m.role === "string" ? m.role : "";
   const content = m.content;
   if (typeof content === "string") {
-    const processed = role === "assistant" ? sanitizeAssistantText(content) : content;
+    const processed = role === "assistant" ? sanitizeAssistantText(content) : role === "user" ? sanitizeUserText(content) : content;
     return processed;
   }
   if (Array.isArray(content)) {
@@ -49,17 +68,17 @@ export function extractText(message: unknown): string | null {
       .filter((v): v is string => typeof v === "string");
     if (parts.length > 0) {
       const joined = parts.join("\n");
-      return role === "assistant" ? sanitizeAssistantText(joined) : joined;
+      return role === "assistant" ? sanitizeAssistantText(joined) : role === "user" ? sanitizeUserText(joined) : joined;
     }
   }
   if (typeof m.text === "string") {
-    return role === "assistant" ? sanitizeAssistantText(m.text) : m.text;
+    return role === "assistant" ? sanitizeAssistantText(m.text) : role === "user" ? sanitizeUserText(m.text) : m.text;
   }
   if (typeof m.output === "string") {
-    return role === "assistant" ? sanitizeAssistantText(m.output) : m.output;
+    return role === "assistant" ? sanitizeAssistantText(m.output) : role === "user" ? sanitizeUserText(m.output) : m.output;
   }
   if (typeof m.response === "string") {
-    return role === "assistant" ? sanitizeAssistantText(m.response) : m.response;
+    return role === "assistant" ? sanitizeAssistantText(m.response) : role === "user" ? sanitizeUserText(m.response) : m.response;
   }
   return null;
 }
