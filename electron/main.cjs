@@ -6,6 +6,8 @@ const WINDOW_WIDTH = 1280;
 const WINDOW_HEIGHT = 820;
 const DESKTOP_LOCAL_IMAGE_SCHEME = "claw-local-image";
 const IMAGE_CACHE_LIMIT = 5;
+const BLANK_CHECK_DELAY_MS = 1400;
+const MAX_BLANK_RECOVERY_ATTEMPTS = 2;
 const LOCAL_GATEWAY_HOSTS = new Set([
   "localhost",
   "127.0.0.1",
@@ -26,6 +28,8 @@ const IMAGE_MIME_BY_EXT = {
 const imageDataCache = new Map();
 let gatewayHttpBaseCandidates = [];
 let gatewayUsesRemoteHost = false;
+let mainWindow = null;
+let isQuitting = false;
 
 function imageMimeTypeFromPath(filePath) {
   const ext = path.extname(filePath).toLowerCase();
@@ -587,8 +591,43 @@ ipcMain.handle("desktop:set-gateway-url", (_event, rawGatewayUrl) => {
   };
 });
 
+function hasLiveMainWindow() {
+  return Boolean(mainWindow && !mainWindow.isDestroyed());
+}
+
+function recreateMainWindow() {
+  if (hasLiveMainWindow()) {
+    const staleWindow = mainWindow;
+    mainWindow = null;
+    try {
+      staleWindow.destroy();
+    } catch {
+      // ignore stale-window teardown errors
+    }
+  }
+  return createMainWindow();
+}
+
+function focusMainWindow() {
+  if (!hasLiveMainWindow()) {
+    return false;
+  }
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+  if (!mainWindow.isVisible()) {
+    mainWindow.show();
+  }
+  mainWindow.focus();
+  return true;
+}
+
 function createMainWindow() {
-  const mainWindow = new BrowserWindow({
+  if (focusMainWindow()) {
+    return mainWindow;
+  }
+
+  const nextWindow = new BrowserWindow({
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
     minWidth: 1000,
@@ -607,12 +646,105 @@ function createMainWindow() {
     throw new Error(`Desktop bundle is missing: ${entryPath}`);
   }
 
-  mainWindow.loadFile(entryPath);
+  mainWindow = nextWindow;
+  nextWindow.loadFile(entryPath);
+  let blankRecoveryAttempts = 0;
+  let blankCheckTimer = null;
 
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+  const clearBlankCheckTimer = () => {
+    if (blankCheckTimer === null) {
+      return;
+    }
+    clearTimeout(blankCheckTimer);
+    blankCheckTimer = null;
+  };
+
+  const runBlankCheck = async () => {
+    if (nextWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      const state = await nextWindow.webContents.executeJavaScript(
+        `(() => {
+          const root = document.getElementById("root");
+          const hasRoot = Boolean(root);
+          const rootChildren = hasRoot ? root.childElementCount : 0;
+          const rootText = hasRoot ? (root.textContent || "").trim().length : 0;
+          return { hasRoot, rootChildren, rootText };
+        })();`,
+      );
+      const looksBlank =
+        !state ||
+        typeof state !== "object" ||
+        state.hasRoot !== true ||
+        (((state.rootChildren ?? 0) === 0) && ((state.rootText ?? 0) === 0));
+      if (!looksBlank) {
+        return;
+      }
+    } catch {
+      // If script execution fails, treat it as a blank state and recover.
+    }
+
+    if (blankRecoveryAttempts >= MAX_BLANK_RECOVERY_ATTEMPTS) {
+      return;
+    }
+    blankRecoveryAttempts += 1;
+
+    if (!nextWindow.isDestroyed()) {
+      nextWindow.webContents.reloadIgnoringCache();
+    }
+  };
+
+  const scheduleBlankCheck = () => {
+    clearBlankCheckTimer();
+    blankCheckTimer = setTimeout(() => {
+      blankCheckTimer = null;
+      void runBlankCheck();
+    }, BLANK_CHECK_DELAY_MS);
+  };
+
+  nextWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url);
     return { action: "deny" };
   });
+
+  nextWindow.webContents.on("did-finish-load", () => {
+    scheduleBlankCheck();
+  });
+
+  nextWindow.webContents.on("did-fail-load", (_event, _errorCode, _errorDescription, _validatedURL, isMainFrame) => {
+    if (!isMainFrame || isQuitting || nextWindow.isDestroyed()) {
+      return;
+    }
+    if (blankRecoveryAttempts >= MAX_BLANK_RECOVERY_ATTEMPTS) {
+      return;
+    }
+    blankRecoveryAttempts += 1;
+    nextWindow.webContents.reloadIgnoringCache();
+  });
+
+  nextWindow.webContents.on("render-process-gone", () => {
+    if (isQuitting) {
+      return;
+    }
+    recreateMainWindow();
+  });
+
+  nextWindow.on("close", (event) => {
+    if (process.platform === "darwin" && !isQuitting) {
+      event.preventDefault();
+      nextWindow.hide();
+    }
+  });
+
+  nextWindow.on("closed", () => {
+    clearBlankCheckTimer();
+    if (mainWindow === nextWindow) {
+      mainWindow = null;
+    }
+  });
+
+  return nextWindow;
 }
 
 app.whenReady().then(() => {
@@ -620,10 +752,14 @@ app.whenReady().then(() => {
   createMainWindow();
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!focusMainWindow()) {
       createMainWindow();
     }
   });
+});
+
+app.on("before-quit", () => {
+  isQuitting = true;
 });
 
 app.on("window-all-closed", () => {

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import type { Attachment, ChatMessage, ToolItem } from "../lib/types.ts";
 import { renderMarkdown } from "../lib/markdown.ts";
 import { formatBytes, formatCompactTokens, truncate } from "../lib/format.ts";
@@ -1350,6 +1350,11 @@ export default function ChatView(props: ChatViewProps) {
         onReady?.();
         return;
       }
+      // Ensure scroll is at the bottom before measuring visibility.
+      // loadHistory may have replaced messages since the initial scroll,
+      // changing scrollHeight while scrollTop stayed stale.
+      container.scrollTop = container.scrollHeight;
+
       const viewport = container.getBoundingClientRect();
       const messageIds = new Set<string>();
       const toolIds = new Set<string>();
@@ -1408,13 +1413,20 @@ export default function ChatView(props: ChatViewProps) {
         item.el.style.setProperty("--pop-stagger", `${stagger}ms`);
       });
 
-      setSessionFlyInMessageIds([...messageIds]);
-      setSessionFlyInToolIds([...toolIds]);
-      setSessionFlyInToolPanelKeys([...toolPanelKeys]);
-      setSessionFlyInStream(streamVisible);
+      // flushSync forces React to commit state + re-render synchronously,
+      // so animation classes are in the DOM BEFORE we reveal the thread.
+      // Without this, there's a flash: visibility="" runs while React state
+      // is still batched → elements appear at full opacity for one frame
+      // before animation classes apply opacity:0.
+      flushSync(() => {
+        setSessionFlyInMessageIds([...messageIds]);
+        setSessionFlyInToolIds([...toolIds]);
+        setSessionFlyInToolPanelKeys([...toolPanelKeys]);
+        setSessionFlyInStream(streamVisible);
+      });
 
-      // Reveal the thread — direct DOM, same frame as fly-in marks.
-      // animated elements start at animation 0% (opacity:0), non-animated appear instantly.
+      // Now animation classes are committed — reveal the thread.
+      // Animated elements start at opacity:0 (animation 0%), non-animated appear instantly.
       mainThread.style.visibility = "";
       onReady?.();
 

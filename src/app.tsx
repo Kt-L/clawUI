@@ -4197,7 +4197,7 @@ export default function App() {
       token,
       password,
       clientName: "clawui",
-      mode: "webchat",
+      mode: "ui",
       onHello: (hello) => {
         setConnected(true);
         setConnectionNote(null);
