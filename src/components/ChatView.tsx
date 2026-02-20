@@ -874,6 +874,87 @@ function renderAttachment(att: Attachment) {
   );
 }
 
+function handleMarkdownClick(e: React.MouseEvent<HTMLDivElement>) {
+  const target = e.target as HTMLElement;
+  const copyBtn = target.closest(".md-code-copy") as HTMLElement | null;
+  if (!copyBtn) return;
+  e.preventDefault();
+  e.stopPropagation();
+  const codeBlock = copyBtn.closest(".md-code");
+  const codeEl = codeBlock?.querySelector("pre code");
+  if (codeEl) {
+    navigator.clipboard
+      .writeText(codeEl.textContent || "")
+      .then(() => {
+        copyBtn.textContent = "Copied!";
+        copyBtn.classList.add("is-copied");
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+          copyBtn.classList.remove("is-copied");
+        }, 2000);
+      })
+      .catch(() => {});
+  }
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+  return (
+    <button
+      type="button"
+      className={`msg-copy-btn ${copied ? "is-copied" : ""}`}
+      onClick={() => {
+        navigator.clipboard
+          .writeText(text)
+          .then(() => {
+            setCopied(true);
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = window.setTimeout(() => setCopied(false), 2000);
+          })
+          .catch(() => {});
+      }}
+      title={copied ? "Copied!" : "Copy"}
+      aria-label={copied ? "Copied!" : "Copy message"}
+    >
+      {copied ? (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
 function formatMessageDateTime(timestamp: number): string {
   const normalized = normalizeMessageTimestamp(timestamp);
   return new Date(normalized).toISOString();
@@ -976,11 +1057,13 @@ const MessageRow = React.memo(
         style={motionStyle}
       >
         <article className={`message-bubble ${isUser ? "user" : "assistant"}`}>
+          <CopyButton text={message.text} />
           <div className="message-role">{roleLabel}</div>
           {markdownHtml && (
             <div
               className="markdown"
               dangerouslySetInnerHTML={{ __html: markdownHtml }}
+              onClick={handleMarkdownClick}
             />
           )}
           {message.attachments && message.attachments.length > 0 && (
@@ -2230,10 +2313,12 @@ export default function ChatView(props: ChatViewProps) {
               style={streamMotionStyle}
             >
               <article className="message-bubble assistant stream-bubble">
+                <CopyButton text={props.streamText || ""} />
                 <div className="message-role">Assistant</div>
                 <div
                   className="markdown"
                   dangerouslySetInnerHTML={{ __html: streamMarkdownHtml }}
+                  onClick={handleMarkdownClick}
                 />
               </article>
             </div>
@@ -2424,7 +2509,8 @@ export default function ChatView(props: ChatViewProps) {
                 className="attachment-trigger"
                 style={{
                   fontSize: actionFontSize,
-                  padding: `${actionPaddingY} ${actionPaddingX}`,
+                  padding: `${Math.round(5 * actionScale)}px ${Math.round(10 * actionScale)}px`,
+                  minHeight: "auto",
                 }}
               >
                 + Attach
@@ -2470,7 +2556,8 @@ export default function ChatView(props: ChatViewProps) {
                 className="ui-btn ui-btn-primary"
                 style={{
                   fontSize: sendFontSize,
-                  padding: `${sendPaddingY} ${sendPaddingX}`,
+                  padding: `${Math.round(6 * actionScale)}px ${Math.round(16 * actionScale)}px`,
+                  minHeight: "auto",
                 }}
               >
                 Send
@@ -2484,6 +2571,11 @@ export default function ChatView(props: ChatViewProps) {
                   onClick={props.onCompact}
                   className="ui-btn ui-btn-light compact-btn"
                   title="Compact session context"
+                  style={{
+                    fontSize: `${props.uiSettings.footerStatsFontSize}px`,
+                    padding: `${Math.round(props.uiSettings.footerStatsFontSize * 0.45)}px ${Math.round(props.uiSettings.footerStatsFontSize * 0.8)}px`,
+                    minHeight: "auto",
+                  }}
                 >
                   🧹 Compact
                 </button>
@@ -2523,6 +2615,11 @@ export default function ChatView(props: ChatViewProps) {
                   type="button"
                   onClick={() => setThinkingMenuOpen((prev) => !prev)}
                   className="ui-btn ui-btn-light"
+                  style={{
+                    fontSize: `${props.uiSettings.footerStatsFontSize}px`,
+                    padding: `${Math.round(props.uiSettings.footerStatsFontSize * 0.45)}px ${Math.round(props.uiSettings.footerStatsFontSize * 0.8)}px`,
+                    minHeight: "auto",
+                  }}
                 >
                   Thinking: {activeThinking}
                 </button>

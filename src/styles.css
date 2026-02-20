@@ -622,6 +622,47 @@ body::before {
   opacity: 0.9;
 }
 
+.message-bubble {
+  position: relative;
+}
+
+.msg-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--frost-border, #e5e7eb);
+  border-radius: 6px;
+  background: var(--frost-surface, #ffffff);
+  color: var(--claw-neutral-500, #71717a);
+  cursor: pointer;
+  opacity: 0;
+  z-index: 4;
+  padding: 0;
+  transition: opacity 150ms ease, background-color 100ms ease, color 100ms ease, border-color 100ms ease;
+}
+
+.message-bubble:hover .msg-copy-btn {
+  opacity: 0.7;
+}
+
+.message-bubble:hover .msg-copy-btn:hover {
+  opacity: 1;
+  background: var(--claw-neutral-100, #f4f4f5);
+  border-color: var(--claw-neutral-300, #d4d4d8);
+  color: var(--claw-neutral-900, #18181b);
+}
+
+.msg-copy-btn.is-copied {
+  opacity: 1;
+  color: #16a34a;
+  border-color: #bbf7d0;
+}
+
 .message-body {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -810,6 +851,39 @@ body::before {
   background: #eaf0f9;
   padding: 0.38rem 0.68rem;
   border-bottom: 1px solid var(--claw-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.markdown .md-code-copy {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 1em;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 150ms ease, background-color 100ms ease, color 100ms ease;
+}
+
+.markdown .md-code:hover .md-code-copy {
+  opacity: 1;
+}
+
+.markdown .md-code-copy:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--claw-neutral-900, #18181b);
+}
+
+.markdown .md-code-copy.is-copied {
+  opacity: 1;
+  color: #16a34a;
 }
 
 .markdown pre {
@@ -2296,6 +2370,9 @@ body::before {
   color: var(--claw-neutral-500);
   border-bottom: 1px solid var(--claw-neutral-200);
   background: var(--claw-neutral-100);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 .markdown pre code {
@@ -3319,8 +3396,9 @@ body::before {
   z-index: 9999 !important;
 }
 
-/* Composer also needs elevated z-index when slash menu is showing */
-.composer-shell:has(.slash-menu) {
+/* Composer also needs elevated z-index when slash menu or thinking menu is showing */
+.composer-shell:has(.slash-menu),
+.composer-shell:has(.menu-open-ctx) {
   z-index: 9999 !important;
 }
 

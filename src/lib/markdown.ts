@@ -118,7 +118,7 @@ renderer.code = (code, infostring, escaped) => {
   const lang = (infostring || "").trim().split(/\s+/)[0] ?? "";
   const language = lang ? escapeHtml(lang) : "text";
   const body = escaped ? code : escapeHtml(code);
-  return `<div class="md-code"><div class="md-code-head">${language}</div><pre><code class="language-${language}">${body}</code></pre></div>`;
+  return `<div class="md-code"><div class="md-code-head"><span>${language}</span><button type="button" class="md-code-copy" title="Copy code">Copy</button></div><pre><code class="language-${language}">${body}</code></pre></div>`;
 };
 
 const markdownParser = new Marked({
@@ -355,6 +355,7 @@ export function renderMarkdown(text: string): string {
       "div",
       "span",
       "input",
+      "button",
       ...MATH_ALLOWED_TAGS,
     ],
   });
