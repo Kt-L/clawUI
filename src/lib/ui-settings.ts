@@ -47,6 +47,8 @@ export type UiSettings = {
   markdownQuoteBg: string;
   markdownQuoteBorderColor: string;
   enableAnimations: boolean;
+  sessionIndicatorWidth: number;
+  autoHoverSidebar: boolean;
 };
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
@@ -87,4 +89,6 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   markdownQuoteBg: "#fafafa",
   markdownQuoteBorderColor: "#d4d4d8",
   enableAnimations: true,
+  sessionIndicatorWidth: 3,
+  autoHoverSidebar: false,
 };

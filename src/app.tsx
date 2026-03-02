@@ -11,7 +11,9 @@ import {
   type ChatHistoryResult,
   type GatewaySessionRow,
   type ModelsListResult,
+  type SessionPreviewItem,
   type SessionsListResult,
+  type SessionsPreviewResult,
   type ToolItem,
   type Attachment,
 } from "./lib/types.ts";
@@ -35,11 +37,16 @@ const STORAGE_KEYS = {
   agentSessionShortcutSchemes: "clawui.agent.session.shortcuts",
   appActionShortcuts: "clawui.app.action.shortcuts",
   lastSession: "clawui.session.last",
+  newSessionPreferredModel: "clawui.newSession.preferredModel",
 };
 
 const SESSION_LIST_INITIAL_LIMIT = 80;
 const SESSION_LIST_STEP = 80;
 const SESSION_LIST_MAX_LIMIT = 1000;
+const SESSION_SEARCH_LIMIT = 200;
+const SESSION_PREVIEW_BATCH_SIZE = 20;
+const SESSION_PREVIEW_ITEM_LIMIT = 10;
+const SESSION_PREVIEW_MAX_CHARS = 500;
 const CHAT_HISTORY_INITIAL_LIMIT = 120;
 const CHAT_HISTORY_STEP = 120;
 const CHAT_HISTORY_MAX_LIMIT = 1000;
@@ -570,6 +577,19 @@ function parseUiSettings(value: unknown): UiSettings {
       typeof parsed.enableAnimations === "boolean"
         ? parsed.enableAnimations
         : DEFAULT_UI_SETTINGS.enableAnimations,
+    sessionIndicatorWidth: Math.max(
+      1,
+      Math.min(
+        10,
+        typeof parsed.sessionIndicatorWidth === "number"
+          ? parsed.sessionIndicatorWidth
+          : DEFAULT_UI_SETTINGS.sessionIndicatorWidth,
+      ),
+    ),
+    autoHoverSidebar:
+      typeof parsed.autoHoverSidebar === "boolean"
+        ? parsed.autoHoverSidebar
+        : DEFAULT_UI_SETTINGS.autoHoverSidebar,
   };
 }
 
@@ -1063,25 +1083,22 @@ function decodeBase64Content(dataUrl: string): string {
 const MAX_EMBEDDED_FILE_CHARS = 100_000;
 
 function buildFileFallbackText(attachments: Attachment[]): string | null {
-  const files = attachments.filter((item) => !item.isImage);
-  if (files.length === 0) {
+  // Only inline text files; binary files (PDF etc.) are sent as real attachments
+  const textFiles = attachments.filter((item) => !item.isImage && isTextFile(item));
+  if (textFiles.length === 0) {
     return null;
   }
 
   const parts: string[] = [];
-  for (const file of files) {
-    if (isTextFile(file)) {
-      let text = decodeBase64Content(file.dataUrl);
-      if (text.length > MAX_EMBEDDED_FILE_CHARS) {
-        text = text.slice(0, MAX_EMBEDDED_FILE_CHARS) + "\n...(truncated)";
-      }
-      if (text) {
-        parts.push(`<file name="${file.name}">\n${text}\n</file>`);
-      } else {
-        parts.push(`[Attached file: ${file.name} (could not decode)]`);
-      }
+  for (const file of textFiles) {
+    let text = decodeBase64Content(file.dataUrl);
+    if (text.length > MAX_EMBEDDED_FILE_CHARS) {
+      text = text.slice(0, MAX_EMBEDDED_FILE_CHARS) + "\n...(truncated)";
+    }
+    if (text) {
+      parts.push(`<file name="${file.name}">\n${text}\n</file>`);
     } else {
-      parts.push(`[Attached file: ${file.name} (${formatBytes(file.size)}) — binary file, content not readable by model]`);
+      parts.push(`[Attached file: ${file.name} (could not decode)]`);
     }
   }
 
@@ -1256,6 +1273,16 @@ type SessionTokenStats = {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+};
+
+type SessionViewState = {
+  messages: ChatMessage[];
+  streamText: string | null;
+  toolItems: ToolItem[];
+  thinking: boolean;
+  chatRunId: string | null;
+  thinkingLevel: string | null;
+  lastLoadedAt: number;
 };
 
 function extractSessionTokenStatsFromMessage(message: unknown): Partial<SessionTokenStats> | null {
@@ -3178,7 +3205,7 @@ function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | 
   }
   const images = extractImages(raw);
   const imageAttachments: Attachment[] = images
-    .map((img, index) => {
+    .map((img, index): Attachment | null => {
       const normalized = normalizeImageSourceData(img.data, img.mimeType);
       if (!normalized.dataUrl) {
         return null;
@@ -3190,9 +3217,9 @@ function toChatMessage(raw: unknown, fallbackTimestamp?: number): ChatMessage | 
         type: img.mimeType,
         dataUrl: normalized.dataUrl,
         isImage: true,
-      } satisfies Attachment;
+      };
     })
-    .filter((item): item is Attachment => Boolean(item));
+    .filter((item): item is Attachment => item !== null);
   const dedupeSignatures = new Set<string>();
   const attachments = [...imageAttachments, ...mediaAttachments].filter((item) => {
     const signature = buildAttachmentSignature(item.type, item.dataUrl);
@@ -3249,6 +3276,8 @@ export default function App() {
   const [connectionNote, setConnectionNote] = useState<string | null>(null);
   const [pairingRequired, setPairingRequired] = useState(false);
   const [sessions, setSessions] = useState<GatewaySessionRow[]>([]);
+  const [sessionPreviews, setSessionPreviews] = useState<Record<string, SessionPreviewItem[]>>({});
+  const [allSessionRows, setAllSessionRows] = useState<Record<string, GatewaySessionRow>>({});
   const [sessionDefaults, setSessionDefaults] = useState<SessionsListResult["defaults"] | null>(
     null,
   );
@@ -3262,7 +3291,7 @@ export default function App() {
   const [chatRunId, setChatRunId] = useState<string | null>(null);
   const [thinking, setThinking] = useState(false);
   const [toolItems, setToolItems] = useState<ToolItem[]>([]);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadUiSettings().autoHoverSidebar);
   const [showSettings, setShowSettings] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const [uiSettings, setUiSettings] = useState<UiSettings>(() => loadUiSettings());
@@ -3292,17 +3321,26 @@ export default function App() {
   });
   const [maxPayloadBytes, setMaxPayloadBytes] = useState(DEFAULT_MAX_WS_PAYLOAD_BYTES);
   const [thinkingLevel, setThinkingLevel] = useState<string | null>(null);
+  const [sessionActivity, setSessionActivity] = useState<
+    Record<string, { working: boolean; unread: boolean }>
+  >({});
   const [sessionListLimit, setSessionListLimit] = useState(SESSION_LIST_INITIAL_LIMIT);
   const [canLoadMoreSessions, setCanLoadMoreSessions] = useState(false);
   const [canLoadMoreHistory, setCanLoadMoreHistory] = useState(false);
   const [loadingOlderHistory, setLoadingOlderHistory] = useState(false);
-  const [deletingSessionKey, setDeletingSessionKey] = useState<string | null>(null);
+  const [deletingSessionKeys, setDeletingSessionKeys] = useState<Set<string>>(new Set());
+  const [newSessionPreferredModel, setNewSessionPreferredModel] = useState<string>(
+    () => loadStored(STORAGE_KEYS.newSessionPreferredModel, ""),
+  );
 
   const clientRef = useRef<GatewayClient | null>(null);
   const selectedSessionRef = useRef<string | null>(selectedSessionKey);
   const chatRunRef = useRef<string | null>(chatRunId);
   const thinkingRef = useRef<boolean>(thinking);
   const streamTextRef = useRef<string | null>(streamText);
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  const toolItemsRef = useRef<ToolItem[]>(toolItems);
+  const thinkingLevelRef = useRef<string | null>(thinkingLevel);
   const lastConfigSnapshotRef = useRef<unknown>(null);
   const sessionListLimitRef = useRef<number>(sessionListLimit);
   const loadingMoreSessionsRef = useRef(false);
@@ -3320,10 +3358,20 @@ export default function App() {
   const streamFlushRafRef = useRef<number | null>(null);
   const pendingSessionCreatesRef = useRef<Set<string>>(new Set());
   const deferredSessionRefreshTimersRef = useRef<number[]>([]);
-  const deletingSessionKeyRef = useRef<string | null>(null);
+  const deletingSessionKeysRef = useRef<Set<string>>(new Set());
+  const sessionCacheRef = useRef<Map<string, SessionViewState>>(new Map());
+  const sessionPreviewsRef = useRef<Record<string, SessionPreviewItem[]>>(sessionPreviews);
+  const sessionPreviewFetchSeqRef = useRef(0);
+  const sessionPreviewKeysSignatureRef = useRef("");
 
   useEffect(() => {
     selectedSessionRef.current = selectedSessionKey;
+  }, [selectedSessionKey]);
+
+  useEffect(() => {
+    if (selectedSessionKey) {
+      updateSessionActivity(selectedSessionKey, { unread: false });
+    }
   }, [selectedSessionKey]);
 
   useEffect(() => {
@@ -3339,8 +3387,24 @@ export default function App() {
   }, [streamText]);
 
   useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    toolItemsRef.current = toolItems;
+  }, [toolItems]);
+
+  useEffect(() => {
+    thinkingLevelRef.current = thinkingLevel;
+  }, [thinkingLevel]);
+
+  useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  useEffect(() => {
+    sessionPreviewsRef.current = sessionPreviews;
+  }, [sessionPreviews]);
 
   const clearDeferredSessionRefreshTimers = () => {
     for (const timer of deferredSessionRefreshTimersRef.current) {
@@ -3383,6 +3447,94 @@ export default function App() {
       flushPendingStreamText();
     });
   }, [flushPendingStreamText]);
+
+  const getEmptySessionViewState = useCallback((): SessionViewState => {
+    return {
+      messages: [],
+      streamText: null,
+      toolItems: [],
+      thinking: false,
+      chatRunId: null,
+      thinkingLevel: null,
+      lastLoadedAt: 0,
+    };
+  }, []);
+
+  const ensureSessionCache = useCallback((key: string): SessionViewState => {
+    const existing = sessionCacheRef.current.get(key);
+    if (existing) {
+      return existing;
+    }
+    const next = getEmptySessionViewState();
+    sessionCacheRef.current.set(key, next);
+    return next;
+  }, [getEmptySessionViewState]);
+
+  function saveCurrentToCache(key: string) {
+    if (!key) {
+      return;
+    }
+    sessionCacheRef.current.set(key, {
+      messages: [...messagesRef.current],
+      streamText: streamTextRef.current,
+      toolItems: [...toolItemsRef.current],
+      thinking: thinkingRef.current,
+      chatRunId: chatRunRef.current,
+      thinkingLevel: thinkingLevelRef.current,
+      lastLoadedAt: Date.now(),
+    });
+  }
+
+  function restoreFromCache(key: string): boolean {
+    if (!key) {
+      return false;
+    }
+    const cached = sessionCacheRef.current.get(key);
+    if (!cached) {
+      return false;
+    }
+    messagesRef.current = cached.messages;
+    toolItemsRef.current = cached.toolItems;
+    thinkingLevelRef.current = cached.thinkingLevel;
+    thinkingRef.current = cached.thinking;
+    chatRunRef.current = cached.chatRunId;
+    setMessages(cached.messages);
+    setStreamTextSynced(cached.streamText);
+    setToolItems(cached.toolItems);
+    setThinking(cached.thinking);
+    setChatRunId(cached.chatRunId);
+    setThinkingLevel(cached.thinkingLevel);
+    return true;
+  }
+
+  function updateSessionActivity(
+    key: string,
+    update: Partial<{ working: boolean; unread: boolean }>,
+  ) {
+    if (!key) {
+      return;
+    }
+    setSessionActivity((previous) => {
+      const current = previous[key] ?? { working: false, unread: false };
+      const next = { ...current, ...update };
+      if (current.working === next.working && current.unread === next.unread) {
+        return previous;
+      }
+      return { ...previous, [key]: next };
+    });
+  }
+
+  function updateCacheField(key: string, updater: (cached: SessionViewState) => SessionViewState) {
+    if (!key) {
+      return;
+    }
+    const current = ensureSessionCache(key);
+    const next = updater(current);
+    sessionCacheRef.current.set(key, {
+      ...next,
+      lastLoadedAt: Date.now(),
+    });
+  }
 
   const cacheRemoteImageDataUrl = (pathKey: string, dataUrl: string) => {
     const cache = remoteImageDataCacheRef.current;
@@ -3585,6 +3737,9 @@ export default function App() {
             void loadHistory(client, activeSessionKey, getHistoryLimit(activeSessionKey));
             refreshSessionsWithFollowUp(client);
           }
+          if (activeSessionKey) {
+            updateSessionActivity(activeSessionKey, { working: false, unread: false });
+          }
           return;
         }
         if (!shouldSkipAssistantFinal(runId, streamedText)) {
@@ -3607,11 +3762,18 @@ export default function App() {
         if (client && activeSessionKey) {
           refreshSessionsWithFollowUp(client);
         }
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: false, unread: false });
+        }
         return;
       }
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
+      const activeSessionKey = selectedSessionRef.current;
+      if (activeSessionKey) {
+        updateSessionActivity(activeSessionKey, { working: false, unread: false });
+      }
       if (params.errorMessage) {
         pushSystemMessage(`Error: ${params.errorMessage}`);
       }
@@ -4115,6 +4277,10 @@ export default function App() {
       uiSettings.markdownQuoteBorderColor,
     );
     document.documentElement.style.setProperty(
+      "--claw-session-indicator-w",
+      `${uiSettings.sessionIndicatorWidth}px`,
+    );
+    document.documentElement.style.setProperty(
       "--claw-animation-duration-scale",
       uiSettings.enableAnimations ? "1" : "0",
     );
@@ -4125,6 +4291,12 @@ export default function App() {
     }
     saveUiSettings(uiSettings);
   }, [uiSettings]);
+
+  useEffect(() => {
+    if (uiSettings.autoHoverSidebar) {
+      setSidebarCollapsed(true);
+    }
+  }, [uiSettings.autoHoverSidebar]);
 
   useEffect(() => {
     saveUiSettingsSchemes(uiSettingsSchemes);
@@ -4149,6 +4321,18 @@ export default function App() {
       // ignore
     }
   }, [activeUiSettingsSchemeId]);
+
+  useEffect(() => {
+    try {
+      if (newSessionPreferredModel) {
+        localStorage.setItem(STORAGE_KEYS.newSessionPreferredModel, newSessionPreferredModel);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.newSessionPreferredModel);
+      }
+    } catch {
+      // ignore
+    }
+  }, [newSessionPreferredModel]);
 
   useEffect(() => {
     const normalized = normalizeGatewayUrl(gatewayUrl);
@@ -4192,6 +4376,10 @@ export default function App() {
   }, [selectedSessionKey]);
 
   useEffect(() => {
+    sessionPreviewFetchSeqRef.current += 1;
+    sessionPreviewKeysSignatureRef.current = "";
+    setSessionPreviews({});
+    setAllSessionRows({});
     const client = new GatewayClient({
       url: gatewayUrl,
       token,
@@ -4281,6 +4469,21 @@ export default function App() {
       return;
     }
     setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[selectedSessionKey] ?? false);
+    const cached = sessionCacheRef.current.get(selectedSessionKey);
+    if (cached) {
+      const hasCachedContent =
+        cached.messages.length > 0 ||
+        cached.toolItems.length > 0 ||
+        Boolean(cached.streamText) ||
+        Boolean(cached.chatRunId) ||
+        cached.thinking;
+      if (hasCachedContent) {
+        const ageMs = Date.now() - cached.lastLoadedAt;
+        if (ageMs < 30_000) {
+          return;
+        }
+      }
+    }
     void loadHistory(client, selectedSessionKey, getHistoryLimit(selectedSessionKey));
   }, [connected, selectedSessionKey]);
 
@@ -4595,6 +4798,104 @@ export default function App() {
     }
   }
 
+  const searchSessionsFromGateway = useCallback(async (query: string): Promise<GatewaySessionRow[]> => {
+    const client = clientRef.current;
+    const needle = query.trim();
+    if (!client || !needle) {
+      return [];
+    }
+    try {
+      const res = (await client.request("sessions.list", {
+        search: needle,
+        limit: SESSION_SEARCH_LIMIT,
+        includeDerivedTitles: true,
+        includeLastMessage: true,
+      })) as SessionsListResult;
+      return Array.isArray(res.sessions) ? res.sessions : [];
+    } catch {
+      return [];
+    }
+  }, []);
+
+  const preloadAllSessionPreviews = useCallback(async (client: GatewayClient) => {
+    // Step 1: Fetch ALL session keys with titles (for search result display)
+    let allSessions: GatewaySessionRow[];
+    try {
+      const res = (await client.request("sessions.list", {
+        limit: SESSION_LIST_MAX_LIMIT,
+        includeDerivedTitles: true,
+        includeLastMessage: true,
+      })) as SessionsListResult;
+      allSessions = Array.isArray(res.sessions) ? res.sessions : [];
+    } catch {
+      return;
+    }
+    if (allSessions.length === 0 || clientRef.current !== client) {
+      return;
+    }
+
+    // Store all session row data for search result rendering
+    const rowsByKey: Record<string, GatewaySessionRow> = {};
+    const uniqueKeys: string[] = [];
+    for (const s of allSessions) {
+      if (s.key.trim().length > 0) {
+        rowsByKey[s.key] = s;
+        uniqueKeys.push(s.key);
+      }
+    }
+    setAllSessionRows(rowsByKey);
+    const keysSignature = [...uniqueKeys].sort().join("\n");
+    if (keysSignature === sessionPreviewKeysSignatureRef.current) {
+      return;
+    }
+    sessionPreviewKeysSignatureRef.current = keysSignature;
+    sessionPreviewFetchSeqRef.current += 1;
+    const fetchSeq = sessionPreviewFetchSeqRef.current;
+
+    // Step 3: Batch-fetch previews for ALL sessions
+    const fetchedByKey: Record<string, SessionPreviewItem[]> = {};
+    for (let index = 0; index < uniqueKeys.length; index += SESSION_PREVIEW_BATCH_SIZE) {
+      if (clientRef.current !== client || sessionPreviewFetchSeqRef.current !== fetchSeq) {
+        return;
+      }
+      const batch = uniqueKeys.slice(index, index + SESSION_PREVIEW_BATCH_SIZE);
+      try {
+        const res = (await client.request("sessions.preview", {
+          keys: batch,
+          limit: SESSION_PREVIEW_ITEM_LIMIT,
+          maxChars: SESSION_PREVIEW_MAX_CHARS,
+        })) as SessionsPreviewResult;
+        const previews = Array.isArray(res.previews) ? res.previews : [];
+        for (const preview of previews) {
+          if (!preview || typeof preview.key !== "string") {
+            continue;
+          }
+          const items = Array.isArray(preview.items) ? preview.items : [];
+          fetchedByKey[preview.key] = items
+            .map((item) => ({
+              role: typeof item?.role === "string" ? item.role : "unknown",
+              text: typeof item?.text === "string" ? item.text : "",
+            }))
+            .filter((item) => item.text.trim().length > 0);
+        }
+      } catch {
+        // Ignore individual preview batch failures; search can still use partial cache.
+      }
+    }
+
+    if (clientRef.current !== client || sessionPreviewFetchSeqRef.current !== fetchSeq) {
+      return;
+    }
+
+    setSessionPreviews((previous) => {
+      const next: Record<string, SessionPreviewItem[]> = {};
+      for (const key of uniqueKeys) {
+        next[key] = fetchedByKey[key] ?? previous[key] ?? [];
+      }
+      return next;
+    });
+  }, []);
+
   async function refreshSessions(client: GatewayClient, requestedLimit?: number) {
     try {
       const limit = Math.min(
@@ -4620,13 +4921,31 @@ export default function App() {
         }
         return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
       });
-      setSessions(ordered);
-      setCanLoadMoreSessions(ordered.length >= limit && limit < SESSION_LIST_MAX_LIMIT);
+      // Patch: fill missing lastMessagePreview from cached stream text
+      for (const session of ordered) {
+        if (!session.lastMessagePreview) {
+          const cached = sessionCacheRef.current.get(session.key);
+          if (cached) {
+            const lastMsg = cached.messages[cached.messages.length - 1];
+            if (lastMsg?.role === "assistant" && lastMsg.text?.trim()) {
+              session.lastMessagePreview = lastMsg.text.trim();
+            }
+          }
+        }
+      }
+      // Filter out sessions that are currently being deleted (prevents reappear flicker)
+      const pendingDeletes = deletingSessionKeysRef.current;
+      const visible = pendingDeletes.size > 0
+        ? ordered.filter((s) => !pendingDeletes.has(s.key))
+        : ordered;
+      setSessions(visible);
+      void preloadAllSessionPreviews(client);
+      setCanLoadMoreSessions(visible.length >= limit && limit < SESSION_LIST_MAX_LIMIT);
       loadingMoreSessionsRef.current = false;
       setSelectedSessionKey((previousKey) =>
         reconcileSelectedSessionKey({
           previousKey,
-          sessions: ordered,
+          sessions: visible,
           primarySessionKey,
         }),
       );
@@ -4670,10 +4989,7 @@ export default function App() {
       if (isActiveSession) {
         setCanLoadMoreHistory(canLoadMore);
       }
-      if (!isActiveSession) {
-        return;
-      }
-      setThinkingLevel(res.thinkingLevel ?? null);
+      const resolvedThinkingLevel = res.thinkingLevel ?? null;
       const historyMessages: ChatMessage[] = [];
       const seenContentKeys = new Set<string>();
       let historyTools: ToolItem[] = [];
@@ -4700,13 +5016,42 @@ export default function App() {
           }
         }
       }
+      const activeStreamText = pendingStreamTextRef.current ?? streamTextRef.current;
+      const shouldPreserveActiveStreaming =
+        isActiveSession &&
+        (thinkingRef.current ||
+          Boolean(chatRunRef.current) ||
+          Boolean(activeStreamText && activeStreamText.trim()));
+      const mergedTools = shouldPreserveActiveStreaming
+        ? mergeToolItems(historyTools, toolItemsRef.current)
+        : historyTools;
+      sessionCacheRef.current.set(key, {
+        messages: historyMessages,
+        streamText: shouldPreserveActiveStreaming ? activeStreamText : null,
+        toolItems: mergedTools,
+        thinking: shouldPreserveActiveStreaming ? thinkingRef.current : false,
+        chatRunId: shouldPreserveActiveStreaming ? chatRunRef.current : null,
+        thinkingLevel: resolvedThinkingLevel,
+        lastLoadedAt: Date.now(),
+      });
+      if (!isActiveSession) {
+        return;
+      }
+      thinkingLevelRef.current = resolvedThinkingLevel;
+      setThinkingLevel(resolvedThinkingLevel);
+      messagesRef.current = historyMessages;
+      toolItemsRef.current = mergedTools;
       setMessages(historyMessages);
-      setToolItems(historyTools);
-      setStreamTextSynced(null);
-      setChatRunId(null);
-      setThinking(false);
-      finalizedAssistantByRunRef.current.clear();
-      lastFinalizedAssistantRef.current = null;
+      setToolItems(mergedTools);
+      if (!shouldPreserveActiveStreaming) {
+        chatRunRef.current = null;
+        thinkingRef.current = false;
+        setStreamTextSynced(null);
+        setChatRunId(null);
+        setThinking(false);
+        finalizedAssistantByRunRef.current.clear();
+        lastFinalizedAssistantRef.current = null;
+      }
     } catch (err) {
       if (selectedSessionRef.current !== key) {
         return;
@@ -4726,9 +5071,110 @@ export default function App() {
       return;
     }
     const activeSessionKey = selectedSessionRef.current;
-    if (parsed.sessionKey && activeSessionKey && !sessionKeysMatch(parsed.sessionKey, activeSessionKey)) {
+    const isNonActiveSession = Boolean(
+      parsed.sessionKey && (!activeSessionKey || !sessionKeysMatch(parsed.sessionKey, activeSessionKey)),
+    );
+    if (isNonActiveSession) {
       const activeRun = chatRunRef.current;
-      if (!activeRun || !parsed.runId || parsed.runId !== activeRun) {
+      if (!activeSessionKey || !(activeRun && parsed.runId && parsed.runId === activeRun)) {
+        const targetKey = parsed.sessionKey!;
+        if (parsed.state === "delta") {
+          const deltaToolUpdates = extractToolUpdatesFromMessage(parsed.message);
+          if (deltaToolUpdates.length > 0) {
+            updateCacheField(targetKey, (cached) => ({
+              ...cached,
+              toolItems: mergeToolItems(cached.toolItems, deltaToolUpdates),
+              chatRunId: parsed.runId ?? cached.chatRunId,
+            }));
+          } else if (!isToolMessage(parsed.message)) {
+            const next = extractText(parsed.message);
+            if (typeof next === "string" && next.length > 0) {
+              updateCacheField(targetKey, (cached) => ({
+                ...cached,
+                streamText: mergeStreamingText(cached.streamText, next),
+                thinking: false,
+                chatRunId: parsed.runId ?? cached.chatRunId,
+              }));
+            }
+          }
+          updateSessionActivity(targetKey, { working: true });
+          return;
+        }
+
+        if (parsed.state === "final") {
+          clearAgentFinalizeTimer(parsed.runId);
+          const toolUpdates = extractToolUpdatesFromMessage(parsed.message);
+          if (toolUpdates.length > 0) {
+            updateCacheField(targetKey, (cached) => ({
+              ...cached,
+              toolItems: mergeToolItems(cached.toolItems, toolUpdates),
+            }));
+          }
+          applySessionTokenStatsFromMessage(parsed.message, parsed.sessionKey);
+          applySessionTokenStatsFromMessage(payload, parsed.sessionKey);
+          const isToolFinal = isToolMessage(parsed.message);
+          const cachedStreamText = (sessionCacheRef.current.get(targetKey)?.streamText ?? "").trim();
+          // Preserve streamed assistant text before tool-use finals clear it.
+          if (isToolFinal && cachedStreamText) {
+            updateCacheField(targetKey, (cached) => ({
+              ...cached,
+              messages: [
+                ...cached.messages,
+                {
+                  id: generateUUID(),
+                  role: "assistant" as const,
+                  text: cachedStreamText,
+                  timestamp: Date.now(),
+                },
+              ],
+              streamText: null,
+            }));
+            updateSessionActivity(targetKey, { working: true });
+          }
+          let msg = toChatMessageSafe(parsed.message);
+          if (!isToolFinal && msg && msg.role !== "user" && !msg.text.trim() && cachedStreamText) {
+            msg = { ...msg, text: cachedStreamText };
+          }
+          if (!isToolFinal && (!msg || !msg.text.trim()) && cachedStreamText) {
+            msg = {
+              id: generateUUID(),
+              role: "assistant",
+              text: cachedStreamText,
+              timestamp: Date.now(),
+              raw: parsed.message,
+            };
+          }
+          const hasRenderableAttachment = Boolean(msg?.attachments && msg.attachments.length > 0);
+          const hasRenderableText = Boolean(msg?.text.trim());
+          if (!isToolFinal && msg && (hasRenderableText || hasRenderableAttachment)) {
+            updateCacheField(targetKey, (cached) => ({
+              ...cached,
+              messages: [...cached.messages, msg],
+              streamText: null,
+              chatRunId: null,
+              thinking: false,
+            }));
+            updateSessionActivity(targetKey, { working: false, unread: true });
+          }
+          // Refresh session list so sidebar picks up lastMessagePreview & derivedTitle
+          const client = clientRef.current;
+          if (client) {
+            refreshSessionsWithFollowUp(client);
+          }
+          return;
+        }
+
+        if (parsed.state === "aborted" || parsed.state === "error") {
+          clearAgentFinalizeTimer(parsed.runId);
+          updateCacheField(targetKey, (cached) => ({
+            ...cached,
+            streamText: null,
+            chatRunId: null,
+            thinking: false,
+          }));
+          updateSessionActivity(targetKey, { working: false });
+          return;
+        }
         return;
       }
     }
@@ -4743,6 +5189,9 @@ export default function App() {
       const deltaToolUpdates = extractToolUpdatesFromMessage(parsed.message);
       if (deltaToolUpdates.length > 0) {
         setToolItems((prev) => mergeToolItems(prev, deltaToolUpdates));
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: true, unread: false });
+        }
         return;
       }
       if (isToolMessage(parsed.message)) {
@@ -4752,6 +5201,9 @@ export default function App() {
       if (typeof next === "string" && next.length > 0) {
         mergeStreamTextSynced(next);
         setThinking(false);
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: true, unread: false });
+        }
       }
       return;
     }
@@ -4787,6 +5239,31 @@ export default function App() {
       applySessionTokenStatsFromMessage(payload, parsed.sessionKey);
       const isToolFinal = isToolMessage(parsed.message);
       const streamedText = (streamTextRef.current ?? "").trim();
+      // When a tool-use final arrives, the model output text before calling the
+      // tool. That text lives in streamText but toChatMessageSafe returns null
+      // for tool messages. Commit the accumulated text as a visible assistant
+      // message before it gets cleared, otherwise it silently disappears.
+      if (isToolFinal && streamedText) {
+        if (!shouldSkipAssistantFinal(parsed.runId, streamedText)) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: generateUUID(),
+              role: "assistant" as const,
+              text: streamedText,
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+        setStreamTextSynced(null);
+        // Model will continue after tool execution — keep activity working.
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: true, unread: false });
+        }
+        setChatRunId(null);
+        setThinking(false);
+        return;
+      }
       let msg = toChatMessageSafe(parsed.message);
       if (!isToolFinal && msg && msg.role !== "user" && !msg.text.trim() && streamedText) {
         msg = { ...msg, text: streamedText };
@@ -4811,6 +5288,9 @@ export default function App() {
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
+      if (activeSessionKey) {
+        updateSessionActivity(activeSessionKey, { working: false, unread: false });
+      }
       const client = clientRef.current;
       if (client) {
         refreshSessionsWithFollowUp(client);
@@ -4823,6 +5303,9 @@ export default function App() {
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
+      if (activeSessionKey) {
+        updateSessionActivity(activeSessionKey, { working: false, unread: false });
+      }
       return;
     }
 
@@ -4831,6 +5314,9 @@ export default function App() {
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
+      if (activeSessionKey) {
+        updateSessionActivity(activeSessionKey, { working: false, unread: false });
+      }
       if (parsed.errorMessage) {
         pushSystemMessage(`Error: ${parsed.errorMessage}`);
       }
@@ -4848,18 +5334,63 @@ export default function App() {
     const runId =
       getString(payload, ["runId", "run_id"]) ??
       (isRecord(payload.data) ? getString(payload.data, ["runId", "run_id"]) : null);
-    if (sessionKey && activeSessionKey && !sessionKeysMatch(sessionKey, activeSessionKey)) {
+    const isNonActiveAgent = Boolean(
+      sessionKey && (!activeSessionKey || !sessionKeysMatch(sessionKey, activeSessionKey)),
+    );
+    if (isNonActiveAgent) {
       const activeRun = chatRunRef.current;
-      if (!activeRun) {
-        return;
-      }
-      if (runId && runId !== activeRun) {
+      if (!activeSessionKey || !(activeRun && runId && runId === activeRun)) {
+        const targetKey = sessionKey!;
+        const updates = extractToolUpdatesFromAgent(payload);
+        if (updates.length > 0) {
+          updateCacheField(targetKey, (cached) => ({
+            ...cached,
+            toolItems: mergeToolItems(cached.toolItems, updates),
+            chatRunId: runId ?? cached.chatRunId,
+          }));
+          updateSessionActivity(targetKey, { working: true });
+        }
+        const streamRaw =
+          getString(payload, ["stream", "channel", "topic"]) ??
+          (isRecord(payload.data) ? getString(payload.data, ["stream", "channel", "topic"]) : null);
+        const stream = streamRaw?.toLowerCase() ?? "";
+        if (stream === "assistant") {
+          // Skip if chat events are already handling this run's streaming
+          // (mirrors the active-session guard in the main handleAgentEvent path)
+          const cachedChatRunId = sessionCacheRef.current.get(targetKey)?.chatRunId;
+          if (cachedChatRunId && (!runId || runId === cachedChatRunId)) {
+            return;
+          }
+          const next = extractAssistantTextFromAgentPayload(payload);
+          if (next) {
+            updateCacheField(targetKey, (cached) => ({
+              ...cached,
+              streamText: mergeStreamingText(cached.streamText, next),
+              thinking: false,
+              chatRunId: runId ?? cached.chatRunId,
+            }));
+            updateSessionActivity(targetKey, { working: true });
+          }
+          return;
+        }
+        if (stream === "lifecycle" && isRecord(payload.data)) {
+          const phase = normalizeLifecyclePhase(
+            getString(payload.data, ["phase", "status", "state", "event", "type"]),
+          );
+          if (phase === "end" || phase === "error") {
+            clearAgentFinalizeTimer(runId);
+            updateSessionActivity(targetKey, { working: false });
+          }
+        }
         return;
       }
     }
     const updates = extractToolUpdatesFromAgent(payload);
     if (updates.length > 0) {
       setToolItems((prev) => mergeToolItems(prev, updates));
+      if (activeSessionKey) {
+        updateSessionActivity(activeSessionKey, { working: true, unread: false });
+      }
     }
     const streamRaw =
       getString(payload, ["stream", "channel", "topic"]) ??
@@ -4878,6 +5409,9 @@ export default function App() {
         }
         mergeStreamTextSynced(next);
         setThinking(false);
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: true, unread: false });
+        }
       }
       return;
     }
@@ -4886,6 +5420,9 @@ export default function App() {
         getString(payload.data, ["phase", "status", "state", "event", "type"]),
       );
       if (phase === "end" || phase === "error") {
+        if (activeSessionKey) {
+          updateSessionActivity(activeSessionKey, { working: false, unread: false });
+        }
         scheduleAgentFinalizeFallback({
           runId,
           phase,
@@ -4922,10 +5459,26 @@ export default function App() {
     return "main";
   }
 
+  function handleSelectSession(key: string) {
+    if (!key) {
+      return;
+    }
+    const previousKey = selectedSessionRef.current;
+    if (previousKey && previousKey !== key) {
+      saveCurrentToCache(previousKey);
+    }
+    updateSessionActivity(key, { unread: false });
+    restoreFromCache(key);
+    selectedSessionRef.current = key;
+    setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[key] ?? false);
+    setSelectedSessionKey(key);
+  }
+
   async function createSession(
     labelInput: string,
     closeModal: boolean,
     preferredAgentId?: string | null,
+    preferredModelId?: string | null,
   ): Promise<string | null> {
     const client = clientRef.current;
     if (!client) {
@@ -4937,6 +5490,9 @@ export default function App() {
     const key = `agent:${agentId}:ui:${slug}-${generateUUID().slice(0, 8)}`;
     const primarySessionKey = resolvePrimarySessionKey(agents, lastConfigSnapshotRef.current);
     const previousSelectedKey = selectedSessionRef.current;
+    if (previousSelectedKey && previousSelectedKey !== key) {
+      saveCurrentToCache(previousSelectedKey);
+    }
     pendingSessionCreatesRef.current.add(key);
     setSessions((prev) => {
       const nextSession: GatewaySessionRow = {
@@ -4958,6 +5514,10 @@ export default function App() {
       next.splice(primaryIndex + 1, 0, nextSession);
       return next;
     });
+    setSessionPreviews((prev) => (Object.prototype.hasOwnProperty.call(prev, key)
+      ? prev
+      : { ...prev, [key]: [] }));
+    selectedSessionRef.current = key;
     setSelectedSessionKey(key);
     setMessages([]);
     setToolItems([]);
@@ -4965,6 +5525,16 @@ export default function App() {
     setChatRunId(null);
     setThinking(false);
     setThinkingLevel(null);
+    sessionCacheRef.current.set(key, {
+      messages: [],
+      streamText: null,
+      toolItems: [],
+      thinking: false,
+      chatRunId: null,
+      thinkingLevel: null,
+      lastLoadedAt: Date.now(),
+    });
+    updateSessionActivity(key, { working: false, unread: false });
     setHistoryLimit(key, CHAT_HISTORY_INITIAL_LIMIT);
     historyCanLoadMoreBySessionRef.current = {
       ...historyCanLoadMoreBySessionRef.current,
@@ -4973,6 +5543,20 @@ export default function App() {
     setCanLoadMoreHistory(false);
     try {
       await client.request("sessions.patch", { key, ...(label ? { label } : {}) });
+      // Apply preferred model if specified
+      const modelToApply = preferredModelId?.trim() || "";
+      if (modelToApply) {
+        try {
+          await client.request("sessions.patch", { key, model: modelToApply });
+          if (normalizeModelKey(modelToApply) === "default") {
+            setSessionModelOverrides((prev) => clearOverride(prev, key));
+          } else {
+            setSessionModelOverrides((prev) => ({ ...prev, [key]: modelToApply }));
+          }
+        } catch {
+          // model patch failed but session was created — continue
+        }
+      }
       if (closeModal) {
         setShowNewSession(false);
       }
@@ -4986,7 +5570,17 @@ export default function App() {
     } catch (err) {
       pendingSessionCreatesRef.current.delete(key);
       setSessions((prev) => prev.filter((session) => session.key !== key));
+      selectedSessionRef.current = previousSelectedKey;
       setSelectedSessionKey((prev) => (prev === key ? previousSelectedKey : prev));
+      sessionCacheRef.current.delete(key);
+      setSessionActivity((prev) => {
+        if (!(key in prev)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
       const nextHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
       delete nextHistoryCanLoadMore[key];
       historyCanLoadMoreBySessionRef.current = nextHistoryCanLoadMore;
@@ -4994,6 +5588,7 @@ export default function App() {
       delete nextHistoryLimit[key];
       historyLimitBySessionRef.current = nextHistoryLimit;
       if (previousSelectedKey) {
+        restoreFromCache(previousSelectedKey);
         setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[previousSelectedKey] ?? false);
         void loadHistory(client, previousSelectedKey, getHistoryLimit(previousSelectedKey));
       }
@@ -5024,7 +5619,7 @@ export default function App() {
         return;
       }
       const toggleSidebarShortcut = appActionShortcuts.toggleSidebar;
-      if (toggleSidebarShortcut.enabled && isShortcutComboEventMatch(toggleSidebarShortcut.combo, event)) {
+      if (toggleSidebarShortcut.enabled && !uiSettings.autoHoverSidebar && isShortcutComboEventMatch(toggleSidebarShortcut.combo, event)) {
         event.preventDefault();
         setSidebarCollapsed((prev) => !prev);
         return;
@@ -5032,12 +5627,12 @@ export default function App() {
       const newSessionShortcut = appActionShortcuts.newSession;
       if (newSessionShortcut.enabled && isShortcutComboEventMatch(newSessionShortcut.combo, event)) {
         event.preventDefault();
-        void createSession("", false);
+        void createSession("", false, null, newSessionPreferredModel || null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes, appActionShortcuts]);
+  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes, appActionShortcuts, newSessionPreferredModel, uiSettings.autoHoverSidebar]);
 
   function buildStatusCard(statusPayload: unknown, configSnapshot: unknown): string {
     const statusRoot: Record<string, unknown> =
@@ -5215,16 +5810,13 @@ export default function App() {
     let preparedAttachments = [...attachments];
     const toApiAttachments = (source: Attachment[]): OutgoingGatewayAttachment[] =>
       source
-        .map((att) => {
-          if (!att.isImage) {
-            return null;
-          }
+        .map((att): OutgoingGatewayAttachment | null => {
           const content = extractBase64Content(att.dataUrl);
           if (!content) {
             return null;
           }
           return {
-            type: "image" as const,
+            type: att.isImage ? ("image" as const) : ("file" as const),
             mimeType: att.type,
             fileName: att.name,
             content,
@@ -5305,12 +5897,21 @@ export default function App() {
       timestamp: Date.now(),
     };
     setMessages((prev) => [...prev, userMessage]);
+    updateCacheField(selectedSessionKey, (cached) => ({
+      ...cached,
+      messages: [...cached.messages, userMessage],
+      thinking: true,
+      chatRunId: runId,
+      streamText: "",
+      thinkingLevel: thinkingLevelRef.current,
+    }));
     setDraft("");
     setAttachments([]);
     chatRunRef.current = runId;
     setChatRunId(runId);
     setThinking(true);
     setStreamTextSynced("");
+    updateSessionActivity(selectedSessionKey, { working: true, unread: false });
 
     try {
       const sendRes = (await client.request("chat.send", {
@@ -5327,15 +5928,27 @@ export default function App() {
       if (ackRunId && ackRunId !== chatRunRef.current) {
         chatRunRef.current = ackRunId;
         setChatRunId(ackRunId);
+        updateCacheField(selectedSessionKey, (cached) => ({
+          ...cached,
+          chatRunId: ackRunId,
+        }));
       }
     } catch (err) {
       setMessages((prev) => prev.filter((message) => message.id !== optimisticMessageId));
       setDraft(draftBeforeSend);
       setAttachments(attachmentsBeforeSend);
+      updateCacheField(selectedSessionKey, (cached) => ({
+        ...cached,
+        messages: cached.messages.filter((message) => message.id !== optimisticMessageId),
+        streamText: null,
+        thinking: false,
+        chatRunId: null,
+      }));
       pushSystemMessage(`Send failed: ${String(err)}`);
       setStreamTextSynced(null);
       setChatRunId(null);
       setThinking(false);
+      updateSessionActivity(selectedSessionKey, { working: false, unread: false });
     }
   }
 
@@ -5375,6 +5988,13 @@ export default function App() {
           setChatRunId(runId);
           setThinking(true);
           setStreamTextSynced("");
+          updateCacheField(selectedSessionKey, (cached) => ({
+            ...cached,
+            streamText: "",
+            thinking: true,
+            chatRunId: runId,
+          }));
+          updateSessionActivity(selectedSessionKey, { working: true, unread: false });
           pushSystemMessage("running /compact...");
           const sendRes = (await client.request("chat.send", {
             sessionKey: selectedSessionKey,
@@ -5389,6 +6009,10 @@ export default function App() {
           if (ackRunId && ackRunId !== chatRunRef.current) {
             chatRunRef.current = ackRunId;
             setChatRunId(ackRunId);
+            updateCacheField(selectedSessionKey, (cached) => ({
+              ...cached,
+              chatRunId: ackRunId,
+            }));
           }
           break;
         }
@@ -5474,6 +6098,13 @@ export default function App() {
           setStreamTextSynced(null);
           setChatRunId(null);
           setThinking(false);
+          updateCacheField(selectedSessionKey, (cached) => ({
+            ...cached,
+            streamText: null,
+            chatRunId: null,
+            thinking: false,
+          }));
+          updateSessionActivity(selectedSessionKey, { working: false, unread: false });
           break;
         }
         case "new": {
@@ -5513,8 +6144,8 @@ export default function App() {
     }
   }
 
-  async function handleCreateSession(label: string, agentId?: string | null) {
-    await createSession(label, true, agentId);
+  async function handleCreateSession(label: string, agentId?: string | null, modelId?: string | null) {
+    await createSession(label, true, agentId, modelId);
   }
 
   async function handleLoadMoreSessions() {
@@ -5564,7 +6195,8 @@ export default function App() {
     if (!client) {
       return;
     }
-    if (deletingSessionKeyRef.current) {
+    // Skip if this specific session is already being deleted
+    if (deletingSessionKeysRef.current.has(key)) {
       return;
     }
     if (!options?.skipConfirm && typeof window !== "undefined") {
@@ -5575,25 +6207,42 @@ export default function App() {
         return;
       }
     }
-    deletingSessionKeyRef.current = key;
-    setDeletingSessionKey(key);
-    const sessionsBeforeDelete = sessionsRef.current;
+    // Track this delete (allows concurrent deletes)
+    deletingSessionKeysRef.current = new Set([...deletingSessionKeysRef.current, key]);
+    setDeletingSessionKeys(new Set(deletingSessionKeysRef.current));
+
     const wasSelected = selectedSessionRef.current === key;
     const nextSelectedKey = wasSelected
-      ? sessionsBeforeDelete.find((session) => session.key !== key)?.key ?? null
+      ? sessionsRef.current.find((session) => session.key !== key && !deletingSessionKeysRef.current.has(session.key))?.key ?? null
       : selectedSessionRef.current;
-    const previousHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
-    const previousHistoryLimit = { ...historyLimitBySessionRef.current };
+
+    // Clean up history tracking for deleted session
     const nextHistoryCanLoadMore = { ...historyCanLoadMoreBySessionRef.current };
     delete nextHistoryCanLoadMore[key];
     historyCanLoadMoreBySessionRef.current = nextHistoryCanLoadMore;
     const nextHistoryLimit = { ...historyLimitBySessionRef.current };
     delete nextHistoryLimit[key];
     historyLimitBySessionRef.current = nextHistoryLimit;
+
+    // Optimistic removal from UI
     setSessions((prev) => prev.filter((session) => session.key !== key));
+    setSessionPreviews((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, key)) {
+        return prev;
+      }
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
     setSessionModelOverrides((prev) => clearOverride(prev, key));
     setSessionThinkingOverrides((prev) => clearOverride(prev, key));
     if (wasSelected) {
+      selectedSessionRef.current = nextSelectedKey;
+      if (nextSelectedKey) {
+        restoreFromCache(nextSelectedKey);
+        updateSessionActivity(nextSelectedKey, { unread: false });
+        setCanLoadMoreHistory(historyCanLoadMoreBySessionRef.current[nextSelectedKey] ?? false);
+      }
       setSelectedSessionKey(nextSelectedKey);
       if (!nextSelectedKey) {
         setMessages([]);
@@ -5606,18 +6255,25 @@ export default function App() {
     }
     try {
       await client.request("sessions.delete", { key });
-      refreshSessionsWithFollowUp(client);
+      sessionCacheRef.current.delete(key);
+      setSessionActivity((prev) => {
+        if (!(key in prev)) {
+          return prev;
+        }
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
     } catch (err) {
-      historyCanLoadMoreBySessionRef.current = previousHistoryCanLoadMore;
-      historyLimitBySessionRef.current = previousHistoryLimit;
-      setSessions(sessionsBeforeDelete);
-      if (wasSelected) {
-        setSelectedSessionKey(key);
-      }
       pushSystemMessage(`Delete failed: ${String(err)}`);
     } finally {
-      deletingSessionKeyRef.current = null;
-      setDeletingSessionKey((previousKey) => (previousKey === key ? null : previousKey));
+      // Remove from pending-delete set
+      const nextPending = new Set(deletingSessionKeysRef.current);
+      nextPending.delete(key);
+      deletingSessionKeysRef.current = nextPending;
+      setDeletingSessionKeys(new Set(nextPending));
+      // Refresh from server to reconcile (filtered by remaining pending deletes)
+      void refreshSessions(client);
     }
   }
 
@@ -5683,16 +6339,22 @@ export default function App() {
       <SessionSidebar
         sessions={sessions}
         selectedKey={selectedSessionKey}
+        sessionActivity={sessionActivity}
         collapsed={sidebarCollapsed}
         sidebarWidth={uiSettings.sidebarWidth}
-        deletingKey={deletingSessionKey}
+        deletingKeys={deletingSessionKeys}
         enableAnimations={uiSettings.enableAnimations}
+        autoHover={uiSettings.autoHoverSidebar}
         onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
-        onSelect={(key) => setSelectedSessionKey(key)}
+        onSetCollapsed={(v) => setSidebarCollapsed(v)}
+        onSelect={handleSelectSession}
         onCreate={() => setShowNewSession(true)}
         onDelete={(key, opts) => void handleDeleteSession(key, opts)}
         hasMore={canLoadMoreSessions}
         onReachEnd={() => void handleLoadMoreSessions()}
+        sessionPreviews={sessionPreviews}
+        allSessionRows={allSessionRows}
+        onSearchGateway={searchSessionsFromGateway}
       />
 
       <div className="main-shell">
@@ -5766,6 +6428,9 @@ export default function App() {
         }
         onChangeAgentSessionShortcutSchemeCombo={handleChangeAgentSessionShortcutSchemeCombo}
         onDeleteAgentSessionShortcutScheme={handleClearAgentSessionShortcutScheme}
+        models={models}
+        newSessionPreferredModel={newSessionPreferredModel}
+        onNewSessionPreferredModelChange={setNewSessionPreferredModel}
       />
 
       <NewSessionModal
@@ -5775,6 +6440,9 @@ export default function App() {
         agentOptions={newSessionAgentChoices}
         defaultAgentId={defaultAgentChoice.id}
         defaultAgentLabel={defaultAgentChoice.label}
+        models={models}
+        preferredModel={newSessionPreferredModel || null}
+        onPreferredModelChange={(model) => setNewSessionPreferredModel(model ?? "")}
       />
     </div>
   );

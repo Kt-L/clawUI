@@ -43,6 +43,22 @@ export type SessionsListResult = {
   sessions: GatewaySessionRow[];
 };
 
+export type SessionPreviewItem = {
+  role: string;
+  text: string;
+};
+
+export type SessionPreview = {
+  key: string;
+  status: string;
+  items: SessionPreviewItem[];
+};
+
+export type SessionsPreviewResult = {
+  ts: number;
+  previews: SessionPreview[];
+};
+
 export type SessionsPatchResult = {
   ok: true;
   path: string;

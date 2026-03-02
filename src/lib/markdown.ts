@@ -94,6 +94,31 @@ const MATH_ALLOWED_ATTRS = [
   "xmlns",
 ];
 
+// KaTeX renders radical symbols (\sqrt), extensible arrows, and other
+// decorations as inline SVGs. Without these tags/attrs DOMPurify strips them.
+const SVG_ALLOWED_TAGS = ["svg", "path", "line", "rect", "circle", "g", "use", "defs", "clipPath"];
+
+const SVG_ALLOWED_ATTRS = [
+  "viewBox",
+  "preserveAspectRatio",
+  "d",
+  "fill",
+  "stroke",
+  "stroke-width",
+  "fill-rule",
+  "clip-path",
+  "clip-rule",
+  "transform",
+  "width",
+  "height",
+  "x",
+  "y",
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+];
+
 function renderMath(text: string, displayMode: boolean): string {
   try {
     return katex.renderToString(text.trim(), {
@@ -325,6 +350,7 @@ export function renderMarkdown(text: string): string {
       "checked",
       "disabled",
       ...MATH_ALLOWED_ATTRS,
+      ...SVG_ALLOWED_ATTRS,
     ],
     ALLOWED_TAGS: [
       "p",
@@ -357,6 +383,7 @@ export function renderMarkdown(text: string): string {
       "input",
       "button",
       ...MATH_ALLOWED_TAGS,
+      ...SVG_ALLOWED_TAGS,
     ],
   });
   return cacheMarkdownHtml(source, sanitized);

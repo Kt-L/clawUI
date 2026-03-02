@@ -42,6 +42,9 @@ type SettingsModalProps = {
       combo: ShortcutCombo;
     },
   ) => void;
+  models?: Array<{ id: string; name: string; provider: string }>;
+  newSessionPreferredModel?: string;
+  onNewSessionPreferredModelChange?: (model: string) => void;
   modelShortcutSchemes: Array<{
     slot: number;
     combo: ShortcutCombo;
@@ -136,6 +139,7 @@ const TYPOGRAPHY_LAYOUT_DEFAULTS: Partial<UiSettings> = {
   contentWidth: DEFAULT_UI_SETTINGS.contentWidth,
   sidebarWidth: DEFAULT_UI_SETTINGS.sidebarWidth,
   sidebarFontSize: DEFAULT_UI_SETTINGS.sidebarFontSize,
+  sessionIndicatorWidth: DEFAULT_UI_SETTINGS.sessionIndicatorWidth,
   messageGap: DEFAULT_UI_SETTINGS.messageGap,
   chatBubbleRadius: DEFAULT_UI_SETTINGS.chatBubbleRadius,
 };
@@ -156,6 +160,7 @@ const CHAT_CONTROLS_DEFAULTS: Partial<UiSettings> = {
   playReplyDoneSoundCustomAudioName: DEFAULT_UI_SETTINGS.playReplyDoneSoundCustomAudioName,
   showToolActivity: DEFAULT_UI_SETTINGS.showToolActivity,
   enableAnimations: DEFAULT_UI_SETTINGS.enableAnimations,
+  autoHoverSidebar: DEFAULT_UI_SETTINGS.autoHoverSidebar,
 };
 
 function formatBytes(bytes: number): string {
@@ -600,6 +605,27 @@ export default function SettingsModal(props: SettingsModalProps) {
                           <span className="field-label">
                             {entry.enabled ? entry.shortcutLabel : `${entry.shortcutLabel} (disabled)`}
                           </span>
+                          {entry.id === "newSession" && (
+                            <label className="field-block" style={{ marginTop: 8 }}>
+                              <span className="field-label">Bound model (auto-applied on shortcut create)</span>
+                              <select
+                                value={props.newSessionPreferredModel ?? ""}
+                                onChange={(e) => props.onNewSessionPreferredModelChange?.(e.target.value)}
+                                className="ui-input"
+                                aria-label="Select model for new session shortcut"
+                              >
+                                <option value="">System default</option>
+                                {(props.models ?? []).map((m) => {
+                                  const full = `${m.provider}/${m.id}`;
+                                  return (
+                                    <option key={full} value={full}>
+                                      {full}
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </label>
+                          )}
                         </div>
                       </div>
                     );
@@ -997,6 +1023,15 @@ export default function SettingsModal(props: SettingsModalProps) {
                   onChange={(value) => patch({ sidebarFontSize: value })}
                 />
                 <NumberField
+                  label="Session indicator width"
+                  value={props.uiSettings.sessionIndicatorWidth}
+                  min={1}
+                  max={10}
+                  step={1}
+                  suffix="px"
+                  onChange={(value) => patch({ sessionIndicatorWidth: value })}
+                />
+                <NumberField
                   label="Message gap"
                   value={props.uiSettings.messageGap}
                   min={8}
@@ -1183,6 +1218,11 @@ export default function SettingsModal(props: SettingsModalProps) {
                   label="Enable UI animations"
                   checked={props.uiSettings.enableAnimations}
                   onChange={(value) => patch({ enableAnimations: value })}
+                />
+                <ToggleField
+                  label="Auto-show sidebar on hover"
+                  checked={props.uiSettings.autoHoverSidebar}
+                  onChange={(value) => patch({ autoHoverSidebar: value })}
                 />
               </div>
             </section>

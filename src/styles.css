@@ -299,6 +299,51 @@ body::before {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--claw-accent) 20%, transparent);
 }
 
+/* ── Session activity states ── */
+
+/* Working: breathing left accent + soft glow */
+.session-card.is-working {
+  border-color: color-mix(in srgb, #5b9bf6 28%, var(--claw-border));
+  box-shadow:
+    inset var(--claw-session-indicator-w, 3px) 0 0 #5b9bf6,
+    0 0 10px rgba(91, 155, 246, 0.06);
+  animation: session-card-breathe 2.4s ease-in-out infinite;
+}
+
+.session-dot.is-working {
+  background: #5b9bf6;
+  animation: session-dot-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes session-card-breathe {
+  0%, 100% {
+    box-shadow:
+      inset var(--claw-session-indicator-w, 3px) 0 0 color-mix(in srgb, #5b9bf6 70%, transparent),
+      0 0 8px rgba(91, 155, 246, 0.04);
+  }
+  50% {
+    box-shadow:
+      inset var(--claw-session-indicator-w, 3px) 0 0 #5b9bf6,
+      0 0 14px rgba(91, 155, 246, 0.10);
+  }
+}
+
+@keyframes session-dot-breathe {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+
+/* Unread: warm left accent + faint tint */
+.session-card.is-unread {
+  border-color: color-mix(in srgb, #e8614d 22%, var(--claw-border));
+  box-shadow: inset var(--claw-session-indicator-w, 3px) 0 0 #e8614d;
+  background: color-mix(in srgb, #fef5f4 12%, rgba(249, 252, 255, 0.78));
+}
+
+.session-dot.is-unread {
+  background: #e8614d;
+}
+
 .session-copy {
   min-width: 0;
   display: grid;
@@ -661,6 +706,54 @@ body::before {
   opacity: 1;
   color: #16a34a;
   border-color: #bbf7d0;
+}
+
+/* ── Message scroll wrap (positioning anchor for nav buttons) ── */
+.chat-scroll-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+/* ── Message navigation buttons ─────────────────────────── */
+.msg-nav-buttons {
+  position: absolute;
+  right: 28px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 20;
+  pointer-events: auto;
+}
+
+.msg-nav-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--claw-border);
+  background: color-mix(in srgb, var(--claw-surface) 92%, transparent);
+  backdrop-filter: blur(8px);
+  color: var(--claw-text-soft);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.msg-nav-btn:hover {
+  background: var(--claw-surface);
+  color: var(--claw-accent);
+  border-color: var(--claw-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.msg-nav-btn:active {
+  transform: scale(0.92);
 }
 
 .message-body {
@@ -4159,4 +4252,78 @@ body::before {
 
 :root[data-animations-off] .attachment-trigger:active {
   transform: none;
+}
+
+.sidebar-search-input-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.sidebar-search-input {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.sidebar-search-clear {
+  position: absolute;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--claw-border) 82%, white);
+  background: color-mix(in srgb, var(--claw-surface) 88%, transparent);
+  color: var(--claw-text-muted);
+  font-size: 12px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.sidebar-search-clear:hover {
+  color: var(--claw-text);
+  border-color: color-mix(in srgb, var(--claw-accent) 30%, var(--claw-border));
+}
+
+.sidebar-search-loading {
+  margin-top: 7px;
+  color: var(--claw-text-muted);
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.sidebar-search-spinner {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  border: 1.5px solid color-mix(in srgb, var(--claw-accent) 35%, transparent);
+  border-top-color: var(--claw-accent);
+  animation: sidebar-search-spin 0.85s linear infinite;
+}
+
+@keyframes sidebar-search-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.session-content-snippet {
+  display: block;
+  color: color-mix(in srgb, var(--claw-accent) 78%, var(--claw-text-soft));
+  border-left: 2px solid color-mix(in srgb, var(--claw-accent) 35%, transparent);
+  padding-left: 7px;
+  margin-top: 1px;
+  line-height: 1.35;
+}
+
+.session-search-highlight {
+  font-weight: 730;
+  color: color-mix(in srgb, var(--claw-accent) 88%, #1f2937);
 }
