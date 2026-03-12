@@ -3594,6 +3594,9 @@ export default function App() {
   const switchView = useCallback((target: "chat" | "files") => {
     if (target === activeViewRef.current) return;
     setActiveView(target);
+    if (target === "files") {
+      setSidebarCollapsed(false);
+    }
   }, []);
 
   const flushPendingStreamText = useCallback(() => {
@@ -4476,10 +4479,10 @@ export default function App() {
   }, [uiSettings]);
 
   useEffect(() => {
-    if (uiSettings.autoHoverSidebar) {
+    if (uiSettings.autoHoverSidebar && activeView === "chat") {
       setSidebarCollapsed(true);
     }
-  }, [uiSettings.autoHoverSidebar]);
+  }, [uiSettings.autoHoverSidebar, activeView]);
 
   useEffect(() => {
     saveUiSettingsSchemes(uiSettingsSchemes);
@@ -6595,7 +6598,7 @@ export default function App() {
               sidebarCollapsed={sidebarCollapsed}
               sidebarWidth={uiSettings.sidebarWidth}
               enableAnimations={uiSettings.enableAnimations}
-              autoHoverSidebar={uiSettings.autoHoverSidebar}
+              autoHoverSidebar={false}
               onToggleSidebarCollapse={() => setSidebarCollapsed((prev) => !prev)}
               onSetSidebarCollapsed={(v) => setSidebarCollapsed(v)}
               onSwitchToChat={() => switchView("chat")}
