@@ -35,6 +35,12 @@ declare global {
         remote?: boolean;
         candidates?: number;
       }>;
+      setFsServerUrl?: (
+        url: string,
+      ) => Promise<{
+        ok: boolean;
+        url: string;
+      }>;
     };
   }
 }

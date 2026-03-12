@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GatewaySessionRow, SessionPreviewItem } from "../lib/types.ts";
 import { formatTime } from "../lib/format.ts";
+import { sanitizeUserText } from "../lib/message-extract.ts";
 import { useCardTilt } from "../hooks/useCardTilt.ts";
 
 const CONTENT_SNIPPET_LEAD = 20;
@@ -30,6 +31,7 @@ export type SessionSidebarProps = {
   onDelete: (key: string, opts?: { skipConfirm?: boolean }) => void;
   onReachEnd?: () => void;
   onSearchGateway: (query: string) => Promise<GatewaySessionRow[]>;
+  onOpenFiles: () => void;
 };
 
 /** Split query into lowercase needles (space = AND). */
@@ -40,8 +42,8 @@ function parseNeedles(query: string): string[] {
 function isPreviewMatch(session: GatewaySessionRow, needles: string[]): boolean {
   const haystack = [
     session.label ?? "",
-    session.derivedTitle ?? "",
-    session.lastMessagePreview ?? "",
+    sanitizeUserText(session.derivedTitle ?? ""),
+    sanitizeUserText(session.lastMessagePreview ?? ""),
   ].join(" ").toLowerCase();
   return needles.every((n) => haystack.includes(n));
 }
@@ -361,7 +363,16 @@ export default function SessionSidebar(props: SessionSidebarProps) {
             className="ui-btn ui-btn-light"
             title="New session"
           >
-            New
+            <span aria-hidden="true" style={{ fontSize: "14px", lineHeight: 1 }}>+</span>
+            {!props.collapsed && " New"}
+          </button>
+          <button
+            type="button"
+            onClick={props.onOpenFiles}
+            className="ui-btn ui-btn-light"
+            title="File manager"
+          >
+            {props.collapsed ? "📁" : "📁 Files"}
           </button>
           {!props.autoHover && (
             <button
@@ -370,7 +381,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
               className="ui-btn ui-btn-light"
               title="Toggle sidebar"
             >
-              {props.collapsed ? ">" : "<"}
+              {props.collapsed ? "\u203A" : "\u2039"}
             </button>
           )}
         </div>
@@ -383,7 +394,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleSearchKeyDown}
-              placeholder="Search sessions (Enter)"
+              placeholder="Search sessions..."
               className="ui-input sidebar-search-input"
               aria-label="Search sessions"
             />
@@ -395,7 +406,7 @@ export default function SessionSidebar(props: SessionSidebarProps) {
                 aria-label="Clear search"
                 title="Clear search"
               >
-                x
+                &times;
               </button>
             )}
           </div>
@@ -410,15 +421,16 @@ export default function SessionSidebar(props: SessionSidebarProps) {
 
       <div className="sidebar-list" onScroll={onScroll}>
         {mergedResults.length === 0 && !props.collapsed && (
-          <div className="sidebar-empty">No sessions found.</div>
+          <div className="sidebar-empty">{hasCommittedSearch ? "No matching sessions" : "No sessions yet"}</div>
         )}
         {mergedResults.map((result) => {
           const session = result.session;
           const isActive = props.selectedKey === session.key;
           const isDeleting = props.deletingKeys.has(session.key);
           const activity = props.sessionActivity[session.key];
-          const title = session.label || session.derivedTitle || session.key;
-          const preview = session.lastMessagePreview ?? "";
+          const rawTitle = session.label || session.derivedTitle || session.key;
+          const title = rawTitle ? sanitizeUserText(rawTitle) || rawTitle : session.key;
+          const preview = session.lastMessagePreview ? sanitizeUserText(session.lastMessagePreview) : "";
           const contentSnippet = result.contentSnippet;
           return (
             <article
@@ -477,12 +489,12 @@ export default function SessionSidebar(props: SessionSidebarProps) {
                   <button
                     type="button"
                     onClick={(event) => props.onDelete(session.key, { skipConfirm: event.metaKey })}
-                    className="session-delete"
+                    className={`session-delete${isDeleting ? " is-deleting-spin" : ""}`}
                     disabled={isDeleting}
                     title={isDeleting ? "Deleting session..." : "Delete session"}
                     aria-label={`Delete session ${title}`}
                   >
-                    {isDeleting ? "..." : "-"}
+                    {isDeleting ? "" : "\u00D7"}
                   </button>
                 )}
               </div>

@@ -46,4 +46,5 @@ contextBridge.exposeInMainWorld("desktopInfo", {
   readImageFile: (filePath) => ipcRenderer.invoke("desktop:read-image-file", filePath),
   fetchImageUrl: (url) => ipcRenderer.invoke("desktop:fetch-image-url", url),
   setGatewayUrl: (url) => ipcRenderer.invoke("desktop:set-gateway-url", url),
+  setFsServerUrl: (url) => ipcRenderer.invoke("desktop:set-fs-server-url", url),
 });

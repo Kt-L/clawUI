@@ -144,7 +144,17 @@ export class GatewayClient {
       this.urlCandidates[0] ??
       this.opts.url;
     this.opened = false;
-    this.ws = new WebSocket(target);
+    try {
+      this.ws = new WebSocket(target);
+    } catch (err) {
+      console.warn("[gateway] invalid WebSocket URL:", target, err);
+      this.opts.onClose?.({
+        code: CONNECT_FAILED_CLOSE_CODE,
+        reason: `Invalid WebSocket URL: ${target}`,
+      });
+      this.scheduleReconnect();
+      return;
+    }
     this.ws.addEventListener("open", () => this.queueConnect());
     this.ws.addEventListener("message", (ev) => this.handleMessage(String(ev.data ?? "")));
     this.ws.addEventListener("close", (ev) => {

@@ -45,6 +45,7 @@ type ChatViewProps = {
   onThinkingSelect: (level: string) => void;
   onCreateSession: () => void;
   onOpenSettings: () => void;
+  onOpenFiles: () => void;
   onResolveRemoteImage?: (filePath: string) => Promise<string | null>;
   onCompact?: () => void;
 };
@@ -2231,8 +2232,8 @@ export default function ChatView(props: ChatViewProps) {
           </div>
 
           {props.canAbort && (
-            <button type="button" onClick={props.onAbort} className="ui-btn ui-btn-light">
-              Stop
+            <button type="button" onClick={props.onAbort} className="ui-btn ui-btn-light" style={{ color: "#b45309" }}>
+              &#9632; Stop
             </button>
           )}
           <button type="button" onClick={props.onCreateSession} className="ui-btn ui-btn-light">
@@ -2333,9 +2334,14 @@ export default function ChatView(props: ChatViewProps) {
 
           {props.messages.length === 0 && (
             <article className="empty-state">
-              <div className="empty-state-title">Start a new session</div>
+              <div className="empty-state-icon" aria-hidden="true">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                </svg>
+              </div>
+              <div className="empty-state-title">Start a conversation</div>
               <div className="empty-state-copy">
-                Ask OpenClaw anything. Use slash commands like /model, /status, /usage.
+                Ask anything, or try a slash command like <code>/model</code>, <code>/status</code>, or <code>/usage</code>.
               </div>
             </article>
           )}
@@ -2591,7 +2597,8 @@ export default function ChatView(props: ChatViewProps) {
                   minHeight: "auto",
                 }}
               >
-                + Attach
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" /></svg>
+                Attach
                 <input
                   type="file"
                   multiple
@@ -2639,6 +2646,7 @@ export default function ChatView(props: ChatViewProps) {
                 }}
               >
                 Send
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: "-2px" }}><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
               </button>
             </div>
 

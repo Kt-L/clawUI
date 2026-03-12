@@ -144,10 +144,12 @@ body::before {
 
 .status-dot.connected {
   background: #4f9a7e;
+  box-shadow: 0 0 0 3px rgba(79, 154, 126, 0.15);
 }
 
 .status-dot.disconnected {
   background: #c98774;
+  box-shadow: 0 0 0 3px rgba(201, 135, 116, 0.15);
 }
 
 .topbar-actions {
@@ -580,14 +582,25 @@ body::before {
   background: rgba(241, 247, 253, 0.84);
   border: 1px solid color-mix(in srgb, var(--claw-border) 82%, white);
   border-radius: 999px;
-  padding: 7px 11px;
+  padding: 7px 14px;
+  user-select: none;
+  letter-spacing: 0.01em;
 }
 
 .empty-state {
   border: 1px solid color-mix(in srgb, var(--claw-border) 80%, white);
   border-radius: 22px;
-  padding: 20px;
+  padding: 28px 24px;
   background: linear-gradient(165deg, rgba(241, 248, 255, 0.84), rgba(255, 255, 255, 0.98));
+  text-align: center;
+  max-width: 420px;
+  margin: 40px auto 0;
+}
+
+.empty-state-icon {
+  color: var(--claw-text-muted);
+  margin-bottom: 12px;
+  opacity: 0.5;
 }
 
 .empty-state-title {
@@ -601,6 +614,17 @@ body::before {
   margin-top: 7px;
   color: var(--claw-text-soft);
   font-size: 14px;
+  line-height: 1.55;
+}
+
+.empty-state-copy code {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.88em;
+  background: var(--claw-md-code-bg, #ecf2f9);
+  padding: 0.15em 0.38em;
+  border-radius: 5px;
+  border: 1px solid rgba(115, 133, 156, 0.18);
+  color: var(--claw-md-code-text, #1e354c);
 }
 
 .message-row {
@@ -647,10 +671,11 @@ body::before {
 .message-role {
   font-size: 10px;
   text-transform: uppercase;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.1em;
   color: var(--claw-text-muted);
   margin-bottom: 9px;
   font-weight: 700;
+  user-select: none;
 }
 
 .message-meta {
@@ -702,10 +727,16 @@ body::before {
   color: var(--claw-neutral-900, #18181b);
 }
 
+.msg-copy-btn:active {
+  transform: scale(0.9);
+  transition-duration: 60ms;
+}
+
 .msg-copy-btn.is-copied {
   opacity: 1;
   color: #16a34a;
   border-color: #bbf7d0;
+  background: #f0fdf4;
 }
 
 /* ── Message scroll wrap (positioning anchor for nav buttons) ── */
@@ -974,6 +1005,11 @@ body::before {
   color: var(--claw-neutral-900, #18181b);
 }
 
+.markdown .md-code-copy:active {
+  transform: scale(0.92);
+  transition-duration: 60ms;
+}
+
 .markdown .md-code-copy.is-copied {
   opacity: 1;
   color: #16a34a;
@@ -1140,10 +1176,17 @@ body::before {
 
 .tool-status-dot.done {
   background: #4f9478;
+  box-shadow: 0 0 0 2px rgba(79, 148, 120, 0.15);
 }
 
 .tool-status-dot.running {
   background: #d08f57;
+  animation: tool-running-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes tool-running-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
 }
 
 .tool-title {
@@ -1496,6 +1539,7 @@ body::before {
 .attachment-trigger {
   display: inline-flex;
   align-items: center;
+  gap: 5px;
   border: 1px solid color-mix(in srgb, var(--claw-border-strong) 85%, white);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.94);
@@ -2362,6 +2406,11 @@ body::before {
   background: var(--claw-neutral-25);
 }
 
+.empty-state-icon {
+  color: var(--claw-neutral-400);
+  opacity: 0.6;
+}
+
 .empty-state-title {
   color: var(--claw-neutral-900);
   font-size: 18px;
@@ -2369,6 +2418,12 @@ body::before {
 
 .empty-state-copy {
   color: var(--claw-neutral-500);
+}
+
+.empty-state-copy code {
+  background: var(--claw-neutral-100);
+  border-color: var(--claw-neutral-200);
+  color: var(--claw-neutral-700);
 }
 
 .message-bubble {
@@ -4044,6 +4099,27 @@ body::before {
   perspective: none;
 }
 
+:root[data-animations-off] .sidebar-flip-card {
+  transition: none !important;
+}
+
+:root[data-animations-off] .sidebar-face {
+  backface-visibility: visible;
+}
+
+:root[data-animations-off] .sidebar-face.face-front {
+  display: flex;
+}
+:root[data-animations-off] .sidebar-face.face-back {
+  display: none;
+}
+:root[data-animations-off] .sidebar-flip-container.is-flipped .sidebar-face.face-front {
+  display: none;
+}
+:root[data-animations-off] .sidebar-flip-container.is-flipped .sidebar-face.face-back {
+  display: flex;
+}
+
 :root[data-animations-off] .session-card {
   transform-style: flat;
   transform: none !important;
@@ -4326,4 +4402,469 @@ body::before {
 .session-search-highlight {
   font-weight: 730;
   color: color-mix(in srgb, var(--claw-accent) 88%, #1f2937);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   20. Selection styling
+   ═══════════════════════════════════════════════════════════════════ */
+::selection {
+  background: color-mix(in srgb, var(--claw-accent, #3e668f) 22%, #fef3c7);
+  color: #18181b;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   21. Smooth placeholder styling
+   ═══════════════════════════════════════════════════════════════════ */
+.ui-input::placeholder,
+.composer-textarea::placeholder {
+  color: var(--claw-neutral-400, #a1a1aa);
+  opacity: 1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   22. Session delete spinner
+   ═══════════════════════════════════════════════════════════════════ */
+.session-delete.is-deleting-spin {
+  color: transparent;
+  position: relative;
+}
+
+.session-delete.is-deleting-spin::after {
+  content: "";
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  border: 1.5px solid var(--claw-neutral-300, #d4d4d8);
+  border-top-color: var(--claw-neutral-500, #71717a);
+  animation: sidebar-search-spin 0.75s linear infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   23. File Manager
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Sidebar flip container ─────────────────────────────────────── */
+
+.sidebar-flip-container {
+  perspective: 2000px;
+  display: flex;
+  flex-shrink: 0;
+  position: relative;
+  contain: layout;
+}
+
+/* Unified 3D card flip */
+.sidebar-flip-card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sidebar-flip-container.is-flipped .sidebar-flip-card {
+  transform: rotateY(180deg);
+}
+
+.sidebar-face {
+  position: absolute;
+  inset: 0;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.face-back {
+  transform: rotateY(180deg);
+}
+
+/* ── Sidebar: File-specific ─────────────────────────────────────── */
+
+.fm-sidebar-roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 6px 14px 12px;
+}
+
+.fm-root-pill {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--claw-border) 75%, white);
+  border-radius: 999px;
+  background: transparent;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 640;
+  color: var(--claw-text-soft);
+  cursor: pointer;
+  transition:
+    background-color calc(180ms * var(--claw-animation-duration-scale)) ease,
+    border-color calc(180ms * var(--claw-animation-duration-scale)) ease,
+    color calc(180ms * var(--claw-animation-duration-scale)) ease;
+}
+
+.fm-root-pill:hover {
+  border-color: var(--claw-border-strong);
+  color: var(--claw-text);
+}
+
+.fm-root-pill.active {
+  background: var(--claw-accent-soft);
+  border-color: color-mix(in srgb, var(--claw-accent) 30%, var(--claw-border));
+  color: var(--claw-accent);
+}
+
+/* ── Sidebar navigation / breadcrumb ────────────────────────────── */
+
+.fm-sidebar-nav {
+  padding: 0 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fm-sidebar-breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  overflow: hidden;
+  flex-wrap: wrap;
+}
+
+.fm-bc-sep {
+  color: var(--claw-text-muted);
+  font-size: 10px;
+  padding: 0 1px;
+  user-select: none;
+  opacity: 0.5;
+}
+
+.fm-bc-item {
+  appearance: none;
+  border: none;
+  background: none;
+  font-size: 11px;
+  color: var(--claw-text-soft);
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 5px;
+  white-space: nowrap;
+  transition: background 150ms ease, color 150ms ease;
+}
+
+.fm-bc-item:hover {
+  background: var(--claw-accent-soft);
+  color: var(--claw-accent);
+}
+
+.fm-bc-item.active {
+  color: var(--claw-text);
+  font-weight: 640;
+}
+
+.fm-sidebar-toolbar {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.fm-sidebar-tool {
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--claw-border) 60%, white);
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+  padding: 6px 10px;
+  min-height: 34px;
+  min-width: 34px;
+  justify-content: center;
+  color: var(--claw-text-soft);
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease, color 150ms ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.fm-sidebar-tool:hover {
+  background: var(--claw-accent-soft);
+  border-color: var(--claw-border-strong);
+  color: var(--claw-accent);
+}
+
+.fm-sidebar-tool:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.fm-hidden-toggle {
+  cursor: pointer;
+}
+
+.fm-hidden-toggle input {
+  accent-color: var(--claw-accent);
+  width: 12px;
+  height: 12px;
+  margin: 0;
+  vertical-align: middle;
+}
+
+/* ── Sort bar ───────────────────────────────────────────────────── */
+
+.fm-sort-bar {
+  display: flex;
+  padding: 0 14px 6px;
+  gap: 4px;
+}
+
+.fm-sort-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--claw-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 150ms ease, background 150ms ease;
+}
+
+.fm-sort-btn:hover {
+  color: var(--claw-text);
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.fm-sort-name { flex: 1; text-align: left; }
+.fm-sort-size { width: 48px; text-align: right; }
+.fm-sort-date { width: 56px; text-align: right; }
+
+/* ── File card (inherits .session-card) ─────────────────────────── */
+
+.fm-file-card {
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+}
+
+.fm-card-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.fm-card-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.fm-card-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.fm-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--claw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: -0.005em;
+}
+
+.fm-card-meta {
+  display: flex;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--claw-text-muted);
+  margin-top: 2px;
+  overflow: hidden;
+}
+
+.fm-card-meta span {
+  white-space: nowrap;
+}
+
+.fm-card-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity calc(200ms * var(--claw-animation-duration-scale)) ease;
+}
+
+.fm-file-card:hover .fm-card-glow {
+  opacity: 1;
+}
+
+/* ── Preview area ───────────────────────────────────────────────── */
+
+.fm-preview-area {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.fm-preview-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.fm-preview-bubble {
+  max-width: 100% !important;
+  width: 100%;
+}
+
+.fm-code-preview {
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--claw-text);
+  margin: 0;
+  tab-size: 2;
+}
+
+.fm-preview-img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(27, 44, 69, 0.1);
+}
+
+.fm-pdf-frame {
+  width: 100%;
+  min-height: 75vh;
+  border: none;
+  border-radius: 12px;
+}
+
+/* ── Upload toast ───────────────────────────────────────────────── */
+
+.fm-upload-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 640;
+  color: var(--claw-accent);
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid color-mix(in srgb, var(--claw-accent) 25%, var(--claw-border));
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(27, 44, 69, 0.12);
+  backdrop-filter: blur(8px);
+  animation: fade-up 240ms ease;
+}
+
+/* ── Error toast ────────────────────────────────────────────────── */
+
+.fm-error-toast {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: #c53030;
+  background: rgba(255, 245, 245, 0.96);
+  border: 1px solid #fed7d7;
+  border-radius: 999px;
+  box-shadow: 0 8px 24px rgba(27, 44, 69, 0.1);
+  animation: fade-up 240ms ease;
+}
+
+.fm-error-toast button {
+  appearance: none;
+  border: none;
+  background: none;
+  font-size: 16px;
+  color: #c53030;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+/* ── Drop overlay ───────────────────────────────────────────────── */
+
+.fm-drag-active {
+  position: relative;
+}
+
+.fm-drop-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--claw-accent) 6%, rgba(255, 255, 255, 0.92));
+  border: 2.5px dashed color-mix(in srgb, var(--claw-accent) 50%, var(--claw-border));
+  border-radius: inherit;
+  z-index: 30;
+  animation: fade-up 200ms ease;
+}
+
+.fm-drop-label {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--claw-accent);
+  letter-spacing: -0.01em;
+}
+
+/* ── Edit mode ──────────────────────────────────────────────────── */
+
+.fm-edit-textarea {
+  width: 100%;
+  min-height: 60vh;
+  max-height: 80vh;
+  resize: vertical;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--claw-text);
+  font-family: "JetBrains Mono", "Fira Code", "Cascadia Code", "IBM Plex Mono", monospace;
+  font-size: 13px;
+  line-height: 1.7;
+  tab-size: 2;
+  padding: 4px 0;
+}
+
+.fm-edit-textarea::placeholder {
+  color: var(--claw-text-muted);
+}
+
+.fm-unsaved-dot {
+  color: var(--claw-accent);
+  font-size: 12px;
+  margin-left: 6px;
+  animation: fm-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes fm-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* ── Navigation breadcrumb spacing ──────────────────────────────── */
+
+.fm-sidebar-nav {
+  padding: 0 14px 12px;
 }

@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { clawFsPlugin } from "./vite-fs-plugin.ts";
 
 const devPort = Number(process.env.PORT) || 5178;
 const WORKSPACE_DIR = path.join(os.homedir(), ".openclaw", "workspace");
@@ -121,7 +122,7 @@ function localImageProxyPlugin() {
 
 export default defineConfig({
   base: "./",
-  plugins: [react(), localImageProxyPlugin()],
+  plugins: [react(), localImageProxyPlugin(), clawFsPlugin()],
   server: {
     port: devPort,
     strictPort: false,

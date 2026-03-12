@@ -4,11 +4,12 @@ const REPLY_TAG_RE = /\[\[\s*(?:reply_to_current|reply_to\s*:\s*[^\]\n]+)\s*\]\]
 
 // OpenClaw injects envelope metadata into user messages:
 //   System: [timestamp] ...  (system events)
-//   Conversation info (untrusted metadata): ```json { ... } ```
+//   Conversation info (untrusted metadata): ```json { ... } ```   (old format)
+//   Sender (untrusted metadata): ```json { ... } ```              (new format)
 //   [Day YYYY-MM-DD HH:MM TZ] actual user text
 // Strip everything up to and including the envelope, leaving only the user's real content.
 const OPENCLAW_ENVELOPE_RE =
-  /^[\s\S]*?Conversation info \(untrusted metadata\):\s*```json?\s*\{[\s\S]*?\}\s*```\s*/i;
+  /^[\s\S]*?(?:Conversation info|Sender)\s*\(untrusted[\s\w]*\):\s*```json?\s*[\s\S]*?```\s*/i;
 const TIMESTAMP_PREFIX_RE =
   /^\[(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}(?:\s+[^\]]+)?\]\s*/i;
 
@@ -29,7 +30,7 @@ function sanitizeAssistantText(text: string): string {
   return stripInlineDirectives(stripThinkingTags(text));
 }
 
-function sanitizeUserText(text: string): string {
+export function sanitizeUserText(text: string): string {
   let cleaned = text;
   // Strip OpenClaw envelope: system events + conversation info metadata block
   cleaned = cleaned.replace(OPENCLAW_ENVELOPE_RE, "");

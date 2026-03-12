@@ -5,6 +5,7 @@ const { app, BrowserWindow, shell, ipcMain, protocol } = require("electron");
 const WINDOW_WIDTH = 1280;
 const WINDOW_HEIGHT = 820;
 const DESKTOP_LOCAL_IMAGE_SCHEME = "claw-local-image";
+const CLAW_FS_SCHEME = "claw-fs";
 const IMAGE_CACHE_LIMIT = 5;
 const BLANK_CHECK_DELAY_MS = 1400;
 const MAX_BLANK_RECOVERY_ATTEMPTS = 2;
@@ -28,6 +29,7 @@ const IMAGE_MIME_BY_EXT = {
 const imageDataCache = new Map();
 let gatewayHttpBaseCandidates = [];
 let gatewayUsesRemoteHost = false;
+let clawFsServerUrl = "";
 let mainWindow = null;
 let isQuitting = false;
 
@@ -141,6 +143,16 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       corsEnabled: true,
+    },
+  },
+  {
+    scheme: CLAW_FS_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
     },
   },
 ]);
@@ -472,6 +484,456 @@ async function readImageFromCandidates(candidates) {
   return { ok: false, error: `read-failed:${lastErrorCode}${suffix}`, path: lastTriedPath };
 }
 
+/* ── ClawFS Protocol Handler ──────────────────────────────────────── */
+
+const CLAWFS_CONFIG_PATH = path.join(
+  app.getPath("home"),
+  ".openclaw",
+  "clawui-fs.json"
+);
+const CLAWFS_MAX_READ_BYTES = 100 * 1024 * 1024; // 100 MB
+
+function clawFsLoadConfig() {
+  try {
+    const raw = fs.readFileSync(CLAWFS_CONFIG_PATH, "utf-8");
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed?.roots)) return parsed;
+  } catch {
+    // ignore
+  }
+  return {
+    roots: [
+      {
+        label: "Workspace",
+        path: path.join(app.getPath("home"), ".openclaw", "workspace"),
+      },
+    ],
+  };
+}
+
+function clawFsSaveConfig(config) {
+  const dir = path.dirname(CLAWFS_CONFIG_PATH);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    CLAWFS_CONFIG_PATH,
+    JSON.stringify(config, null, 2) + "\n",
+    "utf-8"
+  );
+}
+
+function clawFsIsPathUnderRoots(candidate, roots) {
+  const resolved = path.resolve(candidate);
+  for (const root of roots) {
+    const rootResolved = path.resolve(root.path);
+    if (
+      resolved === rootResolved ||
+      resolved.startsWith(rootResolved + path.sep)
+    )
+      return true;
+  }
+  return false;
+}
+
+function clawFsResolveAndValidate(rawPath, roots) {
+  if (!rawPath)
+    return { error: "missing path parameter", status: 400 };
+  const resolved = path.resolve(rawPath);
+  if (!clawFsIsPathUnderRoots(resolved, roots))
+    return { error: "path outside allowed roots", status: 403 };
+  return { resolved };
+}
+
+function clawFsMimeFromExt(ext) {
+  const map = {
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".css": "text/css",
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".xml": "application/xml",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".ico": "image/x-icon",
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".gz": "application/gzip",
+    ".tar": "application/x-tar",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".otf": "font/otf",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+    ".toml": "text/plain",
+    ".log": "text/plain",
+    ".sh": "text/x-shellscript",
+    ".bash": "text/x-shellscript",
+    ".zsh": "text/x-shellscript",
+    ".py": "text/x-python",
+    ".rs": "text/x-rust",
+    ".go": "text/x-go",
+    ".java": "text/x-java",
+    ".c": "text/x-c",
+    ".cpp": "text/x-c++",
+    ".h": "text/x-c",
+    ".hpp": "text/x-c++",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".jsx": "text/javascript",
+    ".r": "text/x-r",
+    ".sql": "text/x-sql",
+  };
+  return map[(ext || "").toLowerCase()] || "application/octet-stream";
+}
+
+function clawFsJsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function clawFsErrorResponse(status, message) {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+function clawFsGetQueryParam(url, key) {
+  try {
+    const u = new URL(url);
+    return u.searchParams.get(key) || "";
+  } catch {
+    return "";
+  }
+}
+
+async function clawFsProxyToRemote(request) {
+  const base = clawFsServerUrl.replace(/\/+$/, "");
+  const fsUrl = new URL(request.url);
+  const route = fsUrl.pathname.replace(/^\/+/, "");
+  const proxyUrl = `${base}/__claw/fs/${route}${fsUrl.search}`;
+
+  const init = { method: request.method, headers: {} };
+  if (request.method === "POST" || request.method === "DELETE") {
+    const ct = request.headers.get("content-type");
+    if (ct) init.headers["content-type"] = ct;
+    init.body = await request.arrayBuffer();
+  }
+
+  try {
+    return await fetch(proxyUrl, init);
+  } catch (err) {
+    return clawFsErrorResponse(502, `proxy error: ${err.message || err}`);
+  }
+}
+
+async function handleClawFsRequest(request) {
+  // If a remote file server URL is configured, proxy FS requests there
+  if (clawFsServerUrl) {
+    return clawFsProxyToRemote(request);
+  }
+
+  try {
+    const url = new URL(request.url);
+    // URL format: claw-fs://fs/<route>?params
+    const route = url.pathname.replace(/^\/+/, "");
+    const config = clawFsLoadConfig();
+
+    switch (route) {
+      /* ── GET /roots ──────────────────────────────────────── */
+      case "roots": {
+        if (request.method === "GET") {
+          return clawFsJsonResponse({ roots: config.roots });
+        }
+        if (request.method === "POST") {
+          const payload = await request.json();
+          if (!Array.isArray(payload?.roots)) {
+            return clawFsErrorResponse(400, "expected { roots: [...] }");
+          }
+          const newRoots = [];
+          for (const r of payload.roots) {
+            if (!r?.path || typeof r.path !== "string") continue;
+            const label =
+              typeof r.label === "string" ? r.label : path.basename(r.path);
+            try {
+              const stat = fs.statSync(r.path);
+              if (!stat.isDirectory()) continue;
+            } catch {
+              continue;
+            }
+            newRoots.push({ label, path: path.resolve(r.path) });
+          }
+          const newConfig = { roots: newRoots };
+          clawFsSaveConfig(newConfig);
+          return clawFsJsonResponse({ roots: newConfig.roots });
+        }
+        return clawFsErrorResponse(405, "method not allowed");
+      }
+
+      /* ── GET /list ───────────────────────────────────────── */
+      case "list": {
+        if (request.method !== "GET")
+          return clawFsErrorResponse(405, "method not allowed");
+        const dirPath = url.searchParams.get("path") || "";
+        const result = clawFsResolveAndValidate(dirPath, config.roots);
+        if (result.error) return clawFsErrorResponse(result.status, result.error);
+        const stat = fs.statSync(result.resolved);
+        if (!stat.isDirectory())
+          return clawFsErrorResponse(400, "not a directory");
+        const entries = fs.readdirSync(result.resolved, {
+          withFileTypes: true,
+        });
+        const items = entries
+          .filter((e) => !e.name.startsWith("."))
+          .map((entry) => {
+            const fullPath = path.join(result.resolved, entry.name);
+            try {
+              const s = fs.statSync(fullPath);
+              return {
+                name: entry.name,
+                path: fullPath,
+                isDirectory: entry.isDirectory(),
+                size: s.size,
+                mtime: s.mtimeMs,
+                mime: entry.isDirectory()
+                  ? null
+                  : clawFsMimeFromExt(path.extname(entry.name)),
+              };
+            } catch {
+              return null;
+            }
+          })
+          .filter(Boolean);
+        return clawFsJsonResponse({ path: result.resolved, items });
+      }
+
+      /* ── GET /list-all ───────────────────────────────────── */
+      case "list-all": {
+        if (request.method !== "GET")
+          return clawFsErrorResponse(405, "method not allowed");
+        const dirPathAll = url.searchParams.get("path") || "";
+        const maxDepthStr = url.searchParams.get("maxDepth");
+        const maxDepth =
+          maxDepthStr !== null ? Math.max(1, parseInt(maxDepthStr, 10) || 10) : 10;
+        const resultAll = clawFsResolveAndValidate(dirPathAll, config.roots);
+        if (resultAll.error)
+          return clawFsErrorResponse(resultAll.status, resultAll.error);
+
+        const allItems = [];
+        const queue = [{ dir: resultAll.resolved, depth: 0 }];
+        while (queue.length > 0) {
+          const { dir, depth } = queue.shift();
+          if (depth > maxDepth) continue;
+          let dirEntries;
+          try {
+            dirEntries = fs.readdirSync(dir, { withFileTypes: true });
+          } catch {
+            continue;
+          }
+          for (const e of dirEntries) {
+            if (e.name.startsWith(".")) continue;
+            const full = path.join(dir, e.name);
+            try {
+              const s = fs.statSync(full);
+              allItems.push({
+                name: e.name,
+                path: full,
+                isDirectory: e.isDirectory(),
+                size: s.size,
+                mtime: s.mtimeMs,
+                mime: e.isDirectory()
+                  ? null
+                  : clawFsMimeFromExt(path.extname(e.name)),
+              });
+              if (e.isDirectory()) {
+                queue.push({ dir: full, depth: depth + 1 });
+              }
+            } catch {
+              // skip
+            }
+          }
+        }
+        return clawFsJsonResponse({ path: resultAll.resolved, items: allItems });
+      }
+
+      /* ── GET /read ───────────────────────────────────────── */
+      case "read": {
+        if (request.method !== "GET")
+          return clawFsErrorResponse(405, "method not allowed");
+        const readPath = url.searchParams.get("path") || "";
+        const resultRead = clawFsResolveAndValidate(readPath, config.roots);
+        if (resultRead.error)
+          return clawFsErrorResponse(resultRead.status, resultRead.error);
+        const readStat = fs.statSync(resultRead.resolved);
+        if (readStat.isDirectory())
+          return clawFsErrorResponse(400, "is a directory");
+        if (readStat.size > CLAWFS_MAX_READ_BYTES)
+          return clawFsErrorResponse(413, "file too large");
+        const mime = clawFsMimeFromExt(path.extname(resultRead.resolved));
+        const data = fs.readFileSync(resultRead.resolved);
+        return new Response(data, {
+          status: 200,
+          headers: {
+            "Content-Type": mime,
+            "Content-Length": String(data.length),
+          },
+        });
+      }
+
+      /* ── GET /stat ───────────────────────────────────────── */
+      case "stat": {
+        if (request.method !== "GET")
+          return clawFsErrorResponse(405, "method not allowed");
+        const statPath = url.searchParams.get("path") || "";
+        const resultStat = clawFsResolveAndValidate(statPath, config.roots);
+        if (resultStat.error)
+          return clawFsErrorResponse(resultStat.status, resultStat.error);
+        const st = fs.statSync(resultStat.resolved);
+        return clawFsJsonResponse({
+          path: resultStat.resolved,
+          isDirectory: st.isDirectory(),
+          isFile: st.isFile(),
+          size: st.size,
+          mtime: st.mtimeMs,
+          mime: st.isDirectory()
+            ? null
+            : clawFsMimeFromExt(path.extname(resultStat.resolved)),
+        });
+      }
+
+      /* ── POST /upload ────────────────────────────────────── */
+      case "upload": {
+        if (request.method !== "POST")
+          return clawFsErrorResponse(405, "method not allowed");
+        const uploadDir = url.searchParams.get("path") || "";
+        const resultUpload = clawFsResolveAndValidate(uploadDir, config.roots);
+        if (resultUpload.error)
+          return clawFsErrorResponse(resultUpload.status, resultUpload.error);
+
+        const contentType = request.headers.get("content-type") || "";
+        if (!contentType.includes("multipart/form-data")) {
+          return clawFsErrorResponse(400, "expected multipart/form-data");
+        }
+
+        // Use the web FormData API available in Electron
+        const formData = await request.formData();
+        const uploaded = [];
+        for (const [key, value] of formData.entries()) {
+          if (typeof value === "object" && value.arrayBuffer) {
+            // It's a File/Blob
+            const filename = value.name || key;
+            const safeName = path.basename(filename);
+            const dest = path.join(resultUpload.resolved, safeName);
+            if (!clawFsIsPathUnderRoots(dest, config.roots)) continue;
+            const buffer = Buffer.from(await value.arrayBuffer());
+            fs.writeFileSync(dest, buffer);
+            uploaded.push({ name: safeName, path: dest, size: buffer.length });
+          }
+        }
+        return clawFsJsonResponse({ uploaded });
+      }
+
+      /* ── POST /mkdir ─────────────────────────────────────── */
+      case "mkdir": {
+        if (request.method !== "POST")
+          return clawFsErrorResponse(405, "method not allowed");
+        const mkdirPath = url.searchParams.get("path") || "";
+        const resultMkdir = clawFsResolveAndValidate(mkdirPath, config.roots);
+        if (resultMkdir.error)
+          return clawFsErrorResponse(resultMkdir.status, resultMkdir.error);
+        fs.mkdirSync(resultMkdir.resolved, { recursive: true });
+        return clawFsJsonResponse({ created: resultMkdir.resolved });
+      }
+
+      /* ── DELETE /delete ──────────────────────────────────── */
+      case "delete": {
+        if (request.method !== "DELETE" && request.method !== "POST")
+          return clawFsErrorResponse(405, "method not allowed");
+        const deletePath = url.searchParams.get("path") || "";
+        const resultDelete = clawFsResolveAndValidate(deletePath, config.roots);
+        if (resultDelete.error)
+          return clawFsErrorResponse(resultDelete.status, resultDelete.error);
+        // Don't allow deleting root directories themselves
+        for (const root of config.roots) {
+          if (path.resolve(root.path) === resultDelete.resolved) {
+            return clawFsErrorResponse(403, "cannot delete a root directory");
+          }
+        }
+        const delStat = fs.statSync(resultDelete.resolved);
+        if (delStat.isDirectory()) {
+          fs.rmSync(resultDelete.resolved, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(resultDelete.resolved);
+        }
+        return clawFsJsonResponse({ deleted: resultDelete.resolved });
+      }
+
+      /* ── POST /rename ────────────────────────────────────── */
+      case "rename": {
+        if (request.method !== "POST")
+          return clawFsErrorResponse(405, "method not allowed");
+        const fromPath = url.searchParams.get("from") || "";
+        const toPath = url.searchParams.get("to") || "";
+        const resultFrom = clawFsResolveAndValidate(fromPath, config.roots);
+        if (resultFrom.error)
+          return clawFsErrorResponse(resultFrom.status, resultFrom.error);
+        const resultTo = clawFsResolveAndValidate(toPath, config.roots);
+        if (resultTo.error)
+          return clawFsErrorResponse(resultTo.status, resultTo.error);
+        fs.renameSync(resultFrom.resolved, resultTo.resolved);
+        return clawFsJsonResponse({
+          from: resultFrom.resolved,
+          to: resultTo.resolved,
+        });
+      }
+
+      /* ── POST /write ─────────────────────────────────────── */
+      case "write": {
+        if (request.method !== "POST")
+          return clawFsErrorResponse(405, "method not allowed");
+        const writePath = url.searchParams.get("path") || "";
+        const resultWrite = clawFsResolveAndValidate(writePath, config.roots);
+        if (resultWrite.error)
+          return clawFsErrorResponse(resultWrite.status, resultWrite.error);
+        const bodyBuf = Buffer.from(await request.arrayBuffer());
+        fs.writeFileSync(resultWrite.resolved, bodyBuf);
+        const writeStat = fs.statSync(resultWrite.resolved);
+        return clawFsJsonResponse({
+          written: resultWrite.resolved,
+          size: writeStat.size,
+        });
+      }
+
+      default:
+        return clawFsErrorResponse(404, `unknown fs route: ${route}`);
+    }
+  } catch (err) {
+    const code = err?.code;
+    if (code === "ENOENT") return clawFsErrorResponse(404, "not found");
+    if (code === "EACCES" || code === "EPERM")
+      return clawFsErrorResponse(403, "permission denied");
+    return clawFsErrorResponse(500, String(err));
+  }
+}
+
 async function handleDesktopLocalImageRequest(request) {
   const rawPath = localImagePathFromDesktopUrl(request.url);
   if (rawPath) {
@@ -589,6 +1051,11 @@ ipcMain.handle("desktop:set-gateway-url", (_event, rawGatewayUrl) => {
     remote: gatewayUsesRemoteHost,
     candidates: gatewayHttpBaseCandidates.length,
   };
+});
+
+ipcMain.handle("desktop:set-fs-server-url", (_event, url) => {
+  clawFsServerUrl = typeof url === "string" ? url.trim() : "";
+  return { ok: true, url: clawFsServerUrl };
 });
 
 function hasLiveMainWindow() {
@@ -749,6 +1216,7 @@ function createMainWindow() {
 
 app.whenReady().then(() => {
   protocol.handle(DESKTOP_LOCAL_IMAGE_SCHEME, handleDesktopLocalImageRequest);
+  protocol.handle(CLAW_FS_SCHEME, handleClawFsRequest);
   createMainWindow();
 
   app.on("activate", () => {

@@ -20,6 +20,8 @@ type SettingsModalProps = {
   onGatewayUrlChange: (value: string) => void;
   onTokenChange: (value: string) => void;
   onPasswordChange: (value: string) => void;
+  fsServerUrl: string;
+  onFsServerUrlChange: (value: string) => void;
   uiSettings: UiSettings;
   onUiSettingsChange: (next: UiSettings) => void;
   uiSettingsSchemes: Array<{ id: string; name: string; updatedAt: number }>;
@@ -946,6 +948,16 @@ export default function SettingsModal(props: SettingsModalProps) {
                     type="password"
                     placeholder="optional"
                   />
+                </label>
+                <label className="field-block">
+                  <span className="field-label">File Server URL</span>
+                  <input
+                    value={props.fsServerUrl}
+                    onChange={(e) => props.onFsServerUrlChange(e.target.value)}
+                    className="ui-input"
+                    placeholder="http://192.168.1.100:3000"
+                  />
+                  <span className="field-hint">Base URL of the dev server for remote file access (leave empty for local)</span>
                 </label>
               </div>
             </section>

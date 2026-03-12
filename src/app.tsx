@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ChatView from "./components/ChatView.tsx";
+import FileManager, { FileManagerProvider } from "./components/FileManager.tsx";
 import SessionSidebar from "./components/SessionSidebar.tsx";
 import SettingsModal from "./components/SettingsModal.tsx";
 import NewSessionModal from "./components/NewSessionModal.tsx";
@@ -30,6 +31,7 @@ import { createReplyDoneSoundPlayer } from "./lib/reply-done-sound.ts";
 const STORAGE_KEYS = {
   gatewayUrl: "clawui.gateway.url",
   token: "clawui.gateway.token",
+  fsServerUrl: "clawui.fs.serverUrl",
   uiSettings: "clawui.ui.settings",
   uiSettingsSchemes: "clawui.ui.settings.schemes",
   activeUiSettingsScheme: "clawui.ui.settings.activeScheme",
@@ -136,7 +138,7 @@ type ShortcutCombo = {
   key: string;
 };
 
-type AppActionShortcutId = "toggleSidebar" | "newSession";
+type AppActionShortcutId = "toggleSidebar" | "newSession" | "toggleFiles";
 
 type AppActionShortcut = {
   enabled: boolean;
@@ -167,7 +169,7 @@ type AgentSessionShortcutSchemeMap = Partial<Record<string, AgentSessionShortcut
 
 const AGENT_SESSION_SHORTCUT_SLOT_MIN = 1;
 const AGENT_SESSION_SHORTCUT_SLOT_MAX = 5;
-const APP_ACTION_SHORTCUT_IDS: AppActionShortcutId[] = ["toggleSidebar", "newSession"];
+const APP_ACTION_SHORTCUT_IDS: AppActionShortcutId[] = ["toggleSidebar", "newSession", "toggleFiles"];
 
 function getDefaultAgentSessionShortcutCombo(slot: number): ShortcutCombo {
   const normalizedSlot = Math.max(
@@ -724,6 +726,15 @@ function getDefaultAppActionShortcutCombo(id: AppActionShortcutId): ShortcutComb
       key: "d",
     };
   }
+  if (id === "toggleFiles") {
+    return {
+      meta: true,
+      ctrl: false,
+      alt: false,
+      shift: true,
+      key: "f",
+    };
+  }
   return {
     meta: true,
     ctrl: false,
@@ -761,6 +772,7 @@ function loadAppActionShortcuts(): AppActionShortcutMap {
   const defaults: AppActionShortcutMap = {
     toggleSidebar: getDefaultAppActionShortcut("toggleSidebar"),
     newSession: getDefaultAppActionShortcut("newSession"),
+    toggleFiles: getDefaultAppActionShortcut("toggleFiles"),
   };
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.appActionShortcuts);
@@ -1103,6 +1115,168 @@ function buildFileFallbackText(attachments: Attachment[]): string | null {
   }
 
   return parts.join("\n\n");
+}
+
+/* ── PDF attachment upload (follows Telegram's saveMediaBuffer pattern) ──── */
+
+const PDF_MEDIA_DIR = "/__claw/fs";
+const PDF_INBOUND_DIR_HINT = ".openclaw/media/inbound";
+
+function isPdfAttachment(att: Attachment): boolean {
+  if (att.type === "application/pdf") return true;
+  const ext = att.name.split(".").pop()?.toLowerCase();
+  return ext === "pdf";
+}
+
+/**
+ * Sanitize filename for cross-platform safety.
+ * Mirrors openclaw's sanitizeFilename: keeps alphanumeric, dots, hyphens,
+ * underscores, Unicode letters/numbers.
+ */
+function sanitizeFilename(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "";
+  return trimmed
+    .replace(/[^\p{L}\p{N}._-]+/gu, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 60);
+}
+
+/**
+ * Upload a PDF attachment to ~/.openclaw/media/inbound/ via the FS API.
+ * Returns the saved file path on disk.
+ * Naming convention follows Telegram: {sanitizedName}---{uuid}.pdf
+ */
+async function uploadPdfToMediaInbound(attachment: Attachment): Promise<string> {
+  // Resolve the inbound directory path
+  const homeDir = await resolveHomeDir();
+  const inboundDir = `${homeDir}/${PDF_INBOUND_DIR_HINT}`;
+
+  // Ensure the directory exists
+  await fetch(`${PDF_MEDIA_DIR}/mkdir?path=${encodeURIComponent(inboundDir)}`, {
+    method: "POST",
+  });
+
+  // Build filename: {sanitized}---{uuid}.pdf
+  const baseName = attachment.name.replace(/\.pdf$/i, "");
+  const sanitized = sanitizeFilename(baseName);
+  const uuid = generateUUID();
+  const fileName = sanitized
+    ? `${sanitized}---${uuid}.pdf`
+    : `${uuid}.pdf`;
+
+  // Decode base64 to binary
+  const base64 = extractBase64Content(attachment.dataUrl);
+  if (!base64) {
+    throw new Error(`PDF attachment "${attachment.name}" has no content`);
+  }
+  const binaryString = atob(base64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  const blob = new Blob([bytes], { type: "application/pdf" });
+
+  // Upload via FormData
+  const formData = new FormData();
+  formData.append("files", blob, fileName);
+  const res = await fetch(
+    `${PDF_MEDIA_DIR}/upload?path=${encodeURIComponent(inboundDir)}`,
+    { method: "POST", body: formData },
+  );
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`PDF upload failed (${res.status}): ${body}`);
+  }
+  const result = await res.json() as { uploaded?: string[] };
+  const savedPath = result.uploaded?.[0];
+  if (!savedPath) {
+    throw new Error("PDF upload returned no path");
+  }
+  return savedPath;
+}
+
+/** Resolve home directory from FS roots config. */
+let _cachedHomeDir: string | null = null;
+async function resolveHomeDir(): Promise<string> {
+  if (_cachedHomeDir) return _cachedHomeDir;
+  try {
+    const res = await fetch(`${PDF_MEDIA_DIR}/roots`);
+    if (res.ok) {
+      const data = await res.json() as { roots: { label: string; path: string }[] };
+      // Look for a root that contains .openclaw
+      for (const root of data.roots) {
+        if (root.path.includes("/.openclaw/") || root.path.endsWith("/.openclaw")) {
+          const home = root.path.replace(/\/\.openclaw.*$/, "");
+          _cachedHomeDir = home;
+          return home;
+        }
+      }
+      // Fallback: try Home root
+      const homeRoot = data.roots.find((r) => r.label === "Home");
+      if (homeRoot) {
+        _cachedHomeDir = homeRoot.path;
+        return homeRoot.path;
+      }
+      // Last fallback: derive from any root with .openclaw pattern
+      for (const root of data.roots) {
+        const match = root.path.match(/^(\/home\/[^/]+|\/root|\/Users\/[^/]+)/);
+        if (match) {
+          _cachedHomeDir = match[1];
+          return match[1];
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  // Absolute fallback
+  _cachedHomeDir = "/home/" + (typeof window !== "undefined" ? "user" : "user");
+  return _cachedHomeDir;
+}
+
+type PdfUploadResult = {
+  attachment: Attachment;
+  savedPath: string;
+};
+
+/**
+ * Upload all PDF attachments and build <file> reference blocks.
+ * Returns the file blocks text and the list of attachment IDs that were processed.
+ */
+async function uploadPdfsAndBuildBlocks(
+  attachments: Attachment[],
+): Promise<{ pdfBlocks: string | null; uploadedIds: Set<string> }> {
+  const pdfs = attachments.filter((att) => !att.isImage && isPdfAttachment(att));
+  if (pdfs.length === 0) {
+    return { pdfBlocks: null, uploadedIds: new Set() };
+  }
+
+  const results: PdfUploadResult[] = [];
+  const uploadedIds = new Set<string>();
+
+  for (const pdf of pdfs) {
+    try {
+      const savedPath = await uploadPdfToMediaInbound(pdf);
+      results.push({ attachment: pdf, savedPath });
+      uploadedIds.add(pdf.id);
+    } catch (err) {
+      console.warn(`Failed to upload PDF "${pdf.name}":`, err);
+      // Fall through — this PDF won't get a file block
+    }
+  }
+
+  if (results.length === 0) {
+    return { pdfBlocks: null, uploadedIds: new Set() };
+  }
+
+  const blocks = results.map(({ attachment, savedPath }) => {
+    const sizeStr = formatBytes(attachment.size);
+    return `<file name="${attachment.name}" mime="application/pdf" path="${savedPath}">\n[PDF document – ${sizeStr} – saved to ${savedPath}]\n</file>`;
+  });
+
+  return { pdfBlocks: blocks.join("\n\n"), uploadedIds };
 }
 
 function loadImageElement(dataUrl: string): Promise<HTMLImageElement> {
@@ -3272,6 +3446,7 @@ export default function App() {
   );
   const [token, setToken] = useState(loadStored(STORAGE_KEYS.token, ""));
   const [password, setPassword] = useState("");
+  const [fsServerUrl, setFsServerUrl] = useState(loadStored(STORAGE_KEYS.fsServerUrl, ""));
   const [connected, setConnected] = useState(false);
   const [connectionNote, setConnectionNote] = useState<string | null>(null);
   const [pairingRequired, setPairingRequired] = useState(false);
@@ -3292,6 +3467,9 @@ export default function App() {
   const [thinking, setThinking] = useState(false);
   const [toolItems, setToolItems] = useState<ToolItem[]>([]);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadUiSettings().autoHoverSidebar);
+  const [activeView, setActiveView] = useState<"chat" | "files">("chat");
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
   const [showSettings, setShowSettings] = useState(false);
   const [showNewSession, setShowNewSession] = useState(false);
   const [uiSettings, setUiSettings] = useState<UiSettings>(() => loadUiSettings());
@@ -3412,6 +3590,11 @@ export default function App() {
     }
     deferredSessionRefreshTimersRef.current = [];
   };
+
+  const switchView = useCallback((target: "chat" | "files") => {
+    if (target === activeViewRef.current) return;
+    setActiveView(target);
+  }, []);
 
   const flushPendingStreamText = useCallback(() => {
     streamFlushRafRef.current = null;
@@ -4366,6 +4549,18 @@ export default function App() {
   }, [token]);
 
   useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.fsServerUrl, fsServerUrl);
+    } catch {
+      // ignore
+    }
+    const setUrl = window.desktopInfo?.setFsServerUrl;
+    if (typeof setUrl === "function") {
+      void setUrl(fsServerUrl).catch(() => {});
+    }
+  }, [fsServerUrl]);
+
+  useEffect(() => {
     if (selectedSessionKey) {
       try {
         localStorage.setItem(STORAGE_KEYS.lastSession, selectedSessionKey);
@@ -4711,6 +4906,13 @@ export default function App() {
         enabled: appActionShortcuts.newSession.enabled,
         combo: appActionShortcuts.newSession.combo,
         shortcutLabel: resolveShortcutLabel(appActionShortcuts.newSession.combo),
+      },
+      {
+        id: "toggleFiles" as const,
+        label: "Toggle Files",
+        enabled: appActionShortcuts.toggleFiles.enabled,
+        combo: appActionShortcuts.toggleFiles.combo,
+        shortcutLabel: resolveShortcutLabel(appActionShortcuts.toggleFiles.combo),
       },
     ],
     [appActionShortcuts],
@@ -5628,11 +5830,18 @@ export default function App() {
       if (newSessionShortcut.enabled && isShortcutComboEventMatch(newSessionShortcut.combo, event)) {
         event.preventDefault();
         void createSession("", false, null, newSessionPreferredModel || null);
+        return;
+      }
+      const toggleFilesShortcut = appActionShortcuts.toggleFiles;
+      if (toggleFilesShortcut.enabled && isShortcutComboEventMatch(toggleFilesShortcut.combo, event)) {
+        event.preventDefault();
+        switchView(activeViewRef.current === "chat" ? "files" : "chat");
+        return;
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes, appActionShortcuts, newSessionPreferredModel, uiSettings.autoHoverSidebar]);
+  }, [agents, connected, modelShortcutSchemes, agentSessionShortcutSchemes, appActionShortcuts, newSessionPreferredModel, uiSettings.autoHoverSidebar, switchView]);
 
   function buildStatusCard(statusPayload: unknown, configSnapshot: unknown): string {
     const statusRoot: Record<string, unknown> =
@@ -5808,6 +6017,24 @@ export default function App() {
     const attachmentsBeforeSend = attachments;
 
     let preparedAttachments = [...attachments];
+
+    // ── PDF upload: save to ~/.openclaw/media/inbound/ (Telegram pattern) ──
+    let pdfBlockText: string | null = null;
+    const pdfAttachments = preparedAttachments.filter((att) => !att.isImage && isPdfAttachment(att));
+    if (pdfAttachments.length > 0) {
+      try {
+        const { pdfBlocks, uploadedIds } = await uploadPdfsAndBuildBlocks(pdfAttachments);
+        pdfBlockText = pdfBlocks;
+        // Remove uploaded PDFs from attachments (they're now referenced by path)
+        if (uploadedIds.size > 0) {
+          preparedAttachments = preparedAttachments.filter((att) => !uploadedIds.has(att.id));
+        }
+      } catch (err) {
+        pushSystemMessage(`PDF upload failed: ${String(err)}`);
+        return;
+      }
+    }
+
     const toApiAttachments = (source: Attachment[]): OutgoingGatewayAttachment[] =>
       source
         .map((att): OutgoingGatewayAttachment | null => {
@@ -5826,11 +6053,9 @@ export default function App() {
 
     let apiAttachments = toApiAttachments(preparedAttachments);
     const fallbackText = buildFileFallbackText(preparedAttachments);
-    const outboundMessage = trimmed
-      ? fallbackText
-        ? `${trimmed}\n\n${fallbackText}`
-        : trimmed
-      : fallbackText || "";
+    // Combine all text parts: user text + text file fallback + PDF file blocks
+    const messageParts = [trimmed, fallbackText, pdfBlockText].filter(Boolean);
+    const outboundMessage = messageParts.join("\n\n") || "";
 
     let estimate = estimateChatSendFrameBytes({
       sessionKey: selectedSessionKey,
@@ -6335,57 +6560,96 @@ export default function App() {
     : [protocolWarning, connectionNote].filter(Boolean).join(" ");
 
   return (
+    <FileManagerProvider>
     <div className="app-shell">
-      <SessionSidebar
-        sessions={sessions}
-        selectedKey={selectedSessionKey}
-        sessionActivity={sessionActivity}
-        collapsed={sidebarCollapsed}
-        sidebarWidth={uiSettings.sidebarWidth}
-        deletingKeys={deletingSessionKeys}
-        enableAnimations={uiSettings.enableAnimations}
-        autoHover={uiSettings.autoHoverSidebar}
-        onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
-        onSetCollapsed={(v) => setSidebarCollapsed(v)}
-        onSelect={handleSelectSession}
-        onCreate={() => setShowNewSession(true)}
-        onDelete={(key, opts) => void handleDeleteSession(key, opts)}
-        hasMore={canLoadMoreSessions}
-        onReachEnd={() => void handleLoadMoreSessions()}
-        sessionPreviews={sessionPreviews}
-        allSessionRows={allSessionRows}
-        onSearchGateway={searchSessionsFromGateway}
-      />
+      {/* Sidebar with unified 3D flip */}
+      <div className={`sidebar-flip-container${activeView === "files" ? " is-flipped" : ""}`}
+        style={{ width: sidebarCollapsed ? "84px" : `${uiSettings.sidebarWidth}px`, transition: "width 0.34s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <div className="sidebar-flip-card">
+          <div className="sidebar-face face-front">
+            <SessionSidebar
+              sessions={sessions}
+              selectedKey={selectedSessionKey}
+              sessionActivity={sessionActivity}
+              collapsed={sidebarCollapsed}
+              sidebarWidth={uiSettings.sidebarWidth}
+              deletingKeys={deletingSessionKeys}
+              enableAnimations={uiSettings.enableAnimations}
+              autoHover={uiSettings.autoHoverSidebar}
+              onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
+              onSetCollapsed={(v) => setSidebarCollapsed(v)}
+              onSelect={handleSelectSession}
+              onCreate={() => setShowNewSession(true)}
+              onDelete={(key, opts) => void handleDeleteSession(key, opts)}
+              hasMore={canLoadMoreSessions}
+              onReachEnd={() => void handleLoadMoreSessions()}
+              sessionPreviews={sessionPreviews}
+              allSessionRows={allSessionRows}
+              onSearchGateway={searchSessionsFromGateway}
+              onOpenFiles={() => switchView("files")}
+            />
+          </div>
+          <div className="sidebar-face face-back">
+            <FileManager
+              mode="sidebar"
+              sidebarCollapsed={sidebarCollapsed}
+              sidebarWidth={uiSettings.sidebarWidth}
+              enableAnimations={uiSettings.enableAnimations}
+              autoHoverSidebar={uiSettings.autoHoverSidebar}
+              onToggleSidebarCollapse={() => setSidebarCollapsed((prev) => !prev)}
+              onSetSidebarCollapsed={(v) => setSidebarCollapsed(v)}
+              onSwitchToChat={() => switchView("chat")}
+              onOpenSettings={() => setShowSettings(true)}
+            />
+          </div>
+        </div>
+      </div>
 
+      {/* Main content area */}
       <div className="main-shell">
-        <ChatView
-          sessionKey={selectedSessionKey}
-          messages={messages}
-          streamText={streamText}
-          thinking={thinking}
-          toolItems={toolItems}
-          draft={draft}
-          onDraftChange={setDraft}
-          attachments={attachments}
-          onAttachmentsChange={setAttachments}
-          onSend={() => void handleSend()}
-          onAbort={() => void handleSlashCommand("/abort")}
-          canAbort={Boolean(chatRunId)}
-          connected={connected}
-          disabledReason={disabledReason}
-          sessionInfo={sessionInfo}
-          models={models}
-          uiSettings={uiSettings}
-          canLoadOlder={canLoadMoreHistory}
-          loadingOlder={loadingOlderHistory}
-          onLoadOlder={() => void handleLoadOlderHistory()}
-          onModelSelect={(model) => void handleSelectModel(model)}
-          onThinkingSelect={(level) => void handleSelectThinking(level)}
-          onCreateSession={() => setShowNewSession(true)}
-          onOpenSettings={() => setShowSettings(true)}
-          onResolveRemoteImage={resolveRemoteImage}
-          onCompact={() => void handleSlashCommand("/compact")}
-        />
+        {activeView === "chat" ? (
+          <ChatView
+            sessionKey={selectedSessionKey}
+            messages={messages}
+            streamText={streamText}
+            thinking={thinking}
+            toolItems={toolItems}
+            draft={draft}
+            onDraftChange={setDraft}
+            attachments={attachments}
+            onAttachmentsChange={setAttachments}
+            onSend={() => void handleSend()}
+            onAbort={() => void handleSlashCommand("/abort")}
+            canAbort={Boolean(chatRunId)}
+            connected={connected}
+            disabledReason={disabledReason}
+            sessionInfo={sessionInfo}
+            models={models}
+            uiSettings={uiSettings}
+            canLoadOlder={canLoadMoreHistory}
+            loadingOlder={loadingOlderHistory}
+            onLoadOlder={() => void handleLoadOlderHistory()}
+            onModelSelect={(model) => void handleSelectModel(model)}
+            onThinkingSelect={(level) => void handleSelectThinking(level)}
+            onCreateSession={() => setShowNewSession(true)}
+            onOpenSettings={() => setShowSettings(true)}
+            onOpenFiles={() => switchView("files")}
+            onResolveRemoteImage={resolveRemoteImage}
+            onCompact={() => void handleSlashCommand("/compact")}
+          />
+        ) : (
+          <FileManager
+            mode="main"
+            sidebarCollapsed={sidebarCollapsed}
+            sidebarWidth={uiSettings.sidebarWidth}
+            enableAnimations={uiSettings.enableAnimations}
+            autoHoverSidebar={uiSettings.autoHoverSidebar}
+            onToggleSidebarCollapse={() => setSidebarCollapsed((prev) => !prev)}
+            onSetSidebarCollapsed={(v) => setSidebarCollapsed(v)}
+            onSwitchToChat={() => switchView("chat")}
+            onOpenSettings={() => setShowSettings(true)}
+          />
+        )}
       </div>
 
       <SettingsModal
@@ -6397,6 +6661,8 @@ export default function App() {
         onGatewayUrlChange={setGatewayUrl}
         onTokenChange={setToken}
         onPasswordChange={setPassword}
+        fsServerUrl={fsServerUrl}
+        onFsServerUrlChange={setFsServerUrl}
         uiSettings={uiSettings}
         onUiSettingsChange={setUiSettings}
         uiSettingsSchemes={uiSettingsSchemes.map((item) => ({
@@ -6445,5 +6711,6 @@ export default function App() {
         onPreferredModelChange={(model) => setNewSessionPreferredModel(model ?? "")}
       />
     </div>
+    </FileManagerProvider>
   );
 }
