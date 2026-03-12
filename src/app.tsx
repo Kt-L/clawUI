@@ -3594,10 +3594,12 @@ export default function App() {
   const switchView = useCallback((target: "chat" | "files") => {
     if (target === activeViewRef.current) return;
     setActiveView(target);
-    if (target === "files") {
-      setSidebarCollapsed(false);
+    if (uiSettings.autoHoverSidebar) {
+      // Files view: sidebar always expanded, no auto-collapse
+      // Chat view: start collapsed (hover to expand)
+      setSidebarCollapsed(target !== "files");
     }
-  }, []);
+  }, [uiSettings.autoHoverSidebar]);
 
   const flushPendingStreamText = useCallback(() => {
     streamFlushRafRef.current = null;
@@ -4479,10 +4481,11 @@ export default function App() {
   }, [uiSettings]);
 
   useEffect(() => {
-    if (uiSettings.autoHoverSidebar && activeView === "chat") {
-      setSidebarCollapsed(true);
+    if (uiSettings.autoHoverSidebar) {
+      // Only auto-collapse in chat view; files view keeps sidebar expanded
+      setSidebarCollapsed(activeViewRef.current !== "files");
     }
-  }, [uiSettings.autoHoverSidebar, activeView]);
+  }, [uiSettings.autoHoverSidebar]);
 
   useEffect(() => {
     saveUiSettingsSchemes(uiSettingsSchemes);
@@ -6578,7 +6581,7 @@ export default function App() {
               sidebarWidth={uiSettings.sidebarWidth}
               deletingKeys={deletingSessionKeys}
               enableAnimations={uiSettings.enableAnimations}
-              autoHover={uiSettings.autoHoverSidebar}
+              autoHover={uiSettings.autoHoverSidebar && activeView === "chat"}
               onToggleCollapse={() => setSidebarCollapsed((prev) => !prev)}
               onSetCollapsed={(v) => setSidebarCollapsed(v)}
               onSelect={handleSelectSession}
@@ -6646,7 +6649,7 @@ export default function App() {
             sidebarCollapsed={sidebarCollapsed}
             sidebarWidth={uiSettings.sidebarWidth}
             enableAnimations={uiSettings.enableAnimations}
-            autoHoverSidebar={uiSettings.autoHoverSidebar}
+            autoHoverSidebar={false}
             onToggleSidebarCollapse={() => setSidebarCollapsed((prev) => !prev)}
             onSetSidebarCollapsed={(v) => setSidebarCollapsed(v)}
             onSwitchToChat={() => switchView("chat")}
