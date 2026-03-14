@@ -6570,9 +6570,9 @@ export default function App() {
     <div className="app-shell">
       {/* Sidebar with unified 3D flip */}
       <div className={`sidebar-flip-container${activeView === "files" ? " is-flipped" : ""}`}
-        style={{ width: sidebarCollapsed ? "84px" : `${uiSettings.sidebarWidth}px`, transition: "width 0.34s cubic-bezier(0.16, 1, 0.3, 1)" }}>
-        <div className="sidebar-flip-card">
-          <div className="sidebar-face face-front">
+        style={{ width: sidebarCollapsed ? "84px" : `${uiSettings.sidebarWidth}px`, height: "100%", transition: "width 0.34s cubic-bezier(0.16, 1, 0.3, 1)" }}>
+        <div className="sidebar-flip-card" style={{ height: "100%" }}>
+          <div className="sidebar-face face-front" style={{ height: "100%" }}>
             <SessionSidebar
               sessions={sessions}
               selectedKey={selectedSessionKey}
@@ -6595,7 +6595,7 @@ export default function App() {
               onOpenFiles={() => switchView("files")}
             />
           </div>
-          <div className="sidebar-face face-back">
+          <div className="sidebar-face face-back" style={{ height: "100%" }}>
             <FileManager
               mode="sidebar"
               sidebarCollapsed={sidebarCollapsed}

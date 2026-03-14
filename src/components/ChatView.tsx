@@ -2264,9 +2264,10 @@ export default function ChatView(props: ChatViewProps) {
 
               {outgoingThreadSnapshot.displayedMessages.length === 0 && (
                 <article className="empty-state">
-                  <div className="empty-state-title">Start a new session</div>
+                  <div className="empty-state-greeting" aria-hidden="true">🦞</div>
+                  <div className="empty-state-title">New Conversation</div>
                   <div className="empty-state-copy">
-                    Ask OpenClaw anything. Use slash commands like /model, /status, /usage.
+                    Type a message to get started, or use a <code>/command</code>.
                   </div>
                 </article>
               )}
@@ -2334,14 +2335,16 @@ export default function ChatView(props: ChatViewProps) {
 
           {props.messages.length === 0 && (
             <article className="empty-state">
-              <div className="empty-state-icon" aria-hidden="true">
-                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-              </div>
-              <div className="empty-state-title">Start a conversation</div>
+              <div className="empty-state-greeting" aria-hidden="true">🦞</div>
+              <div className="empty-state-title">New Conversation</div>
               <div className="empty-state-copy">
-                Ask anything, or try a slash command like <code>/model</code>, <code>/status</code>, or <code>/usage</code>.
+                Type a message to get started, or use a <code>/command</code>.
+              </div>
+              <div className="empty-state-hints">
+                <span className="empty-state-hint">/model</span>
+                <span className="empty-state-hint">/status</span>
+                <span className="empty-state-hint">/usage</span>
+                <span className="empty-state-hint">/compact</span>
               </div>
             </article>
           )}
