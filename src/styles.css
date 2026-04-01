@@ -4920,3 +4920,91 @@ body::before {
 .fm-sidebar-nav {
   padding: 0 14px 12px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   24. Mermaid Diagram Styles
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Mermaid container */
+.markdown .mermaid {
+  max-width: 100%;
+  overflow: auto;
+  margin: 16px 0;
+  border-radius: 12px;
+  background: var(--claw-panel-bg, #2d2d2d);
+  color: var(--claw-text, #e0e0e0);
+  padding: 12px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+
+.markdown .mermaid svg {
+  width: 100%;
+  height: auto;
+  min-width: 320px;
+  max-width: 100%;
+  display: block;
+}
+
+/* Mermaid fallback (error handling) */
+.markdown .mermaid-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  background: var(--claw-error-bg, #ff444420);
+  color: var(--claw-error-text, #ff4444);
+  border-radius: 12px;
+  border: 1px solid var(--claw-error-border, #ff444440);
+  margin: 16px 0;
+}
+
+.markdown .mermaid-fallback-error {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.9em;
+}
+
+/* Accessibility */
+.markdown .mermaid[aria-label]::before {
+  content: attr(aria-label);
+  display: block;
+  font-size: 0;
+  line-height: 0;
+}
+
+.markdown .mermaid-fallback[role="alert"] {
+  z-index: 1;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .markdown .mermaid svg {
+    transition: none !important;
+    animation: none !important;
+  }
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .markdown .mermaid {
+    padding: 8px;
+    margin: 12px 0;
+    border-radius: 10px;
+  }
+
+  .markdown .mermaid svg {
+    min-width: 280px;
+  }
+}
+
+@media (min-width: 769px) and (max-width: 1200px) {
+  .markdown .mermaid {
+    padding: 10px;
+    border-radius: 11px;
+  }
+}
+
+@media (min-width: 1201px) {
+  .markdown .mermaid {
+    padding: 12px;
+  }
+}

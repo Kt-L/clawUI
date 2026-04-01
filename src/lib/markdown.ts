@@ -2,6 +2,7 @@ import DOMPurify from "dompurify";
 import katex from "katex";
 import { Marked, Renderer } from "marked";
 import markedKatex from "marked-katex-extension";
+import mermaid from "mermaid";
 
 function escapeHtml(input: string): string {
   return input
@@ -305,6 +306,27 @@ markdownParser.use({
       },
       renderer(token: MathToken) {
         return renderMath(token.text, false);
+      },
+    },
+    {
+      level: "block",
+      name: "mermaid",
+      start(src) {
+        const index = src.search(/ {0,3}(?:`{3,}|~{3,})\s*(?:mermaid)\b/i);
+        return index >= 0 ? index : undefined;
+      },
+      tokenizer(src) {
+        const match = src.match(/^ {0,3}(`{3,}|~{3,})\s*(?:mermaid)[^\n]*\n([\s\S]*?)\n {0,3}\1[ \t]*(?:\n|$)/i);
+        if (!match) return undefined;
+        return {
+          raw: match[0],
+          text: match[2],
+          type: "mermaid",
+        };
+      },
+      renderer(text) {
+        const id = `mermaid-${Math.random().toString(36).substring(7)}`;
+        return `<div class="mermaid" data-mermaid-id="${id}">${text}</div>\n`;
       },
     },
   ],
