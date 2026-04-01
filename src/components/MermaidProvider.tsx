@@ -84,15 +84,71 @@ function isMermaidElement(element: HTMLElement): boolean {
          !element.classList.contains('mermaid-rendered');
 }
 
+const MERMAID_KEYWORDS = [
+  'flowchart',
+  'sequenceDiagram',
+  'gantt',
+  'stateDiagram',
+  'erDiagram',
+  'mindmap',
+  'pie',
+  'journey',
+  'gitGraph',
+  'flowChart',
+  'sequence',
+  'classDiagram',
+  'classDiagram-v2',
+  'requirementDiagram',
+  'git',
+  'pie',
+  'journey',
+  'C4Context',
+  'C4Container',
+  'C4Component',
+  'C4Dynamic',
+  'C4Deployment'
+];
+
+function isValidMermaidText(text: string): boolean {
+  // First, check if text is non-empty after trimming
+  const trimmed = text.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  // Second, check if text contains at least one mermaid keyword
+  // This prevents rendering empty blocks or whitespace-only blocks
+  const lowerText = trimmed.toLowerCase();
+  return MERMAID_KEYWORDS.some(keyword => lowerText.includes(keyword.toLowerCase()));
+}
+
 function scanForMermaidElements(root: Document | ShadowRoot = document) {
   const elements = root.querySelectorAll('.mermaid');
   elements.forEach((el) => {
     const element = el as HTMLElement;
     if (!isMermaidElement(element)) return;
-    
+
     const text = element.textContent?.trim() || '';
-    if (!text) return;
     
+    // Skip empty or invalid mermaid blocks
+    if (!text) {
+      element.classList.add('mermaid-rendered');
+      console.debug('Mermaid: Skipping empty block');
+      return;
+    }
+
+    if (!isValidMermaidText(text)) {
+      element.classList.add('mermaid-rendered');
+      console.debug('Mermaid: Skipping invalid block (no mermaid keywords)', {
+        textPreview: text.substring(0, 50),
+        textLength: text.length
+      });
+      
+      // Convert to regular code block display
+      element.classList.remove('mermaid');
+      return;
+    }
+
     element.classList.add('mermaid-rendered');
     queueMermaidRender(text, element);
   });

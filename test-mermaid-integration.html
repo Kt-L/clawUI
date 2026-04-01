@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mermaid Integration Test</title>
+    <style>
+        :root {
+            --claw-panel-bg: #2d2d2d;
+            --claw-text: #e0e0e0;
+            --claw-border: #404040;
+            --claw-error-bg: #ff444420;
+            --claw-error-text: #ff4444;
+            --claw-error-border: #ff444440;
+        }
+
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background: var(--claw-panel-bg);
+            color: var(--claw-text);
+            margin: 0;
+            padding: 20px;
+        }
+
+        .test-section {
+            margin: 30px 0;
+            padding: 20px;
+            border: 1px solid var(--claw-border);
+            border-radius: 12px;
+        }
+
+        .test-title {
+            color: #64b5f6;
+            margin-bottom: 15px;
+        }
+
+        .test-note {
+            font-size: 0.9em;
+            color: #90caf9;
+            margin-bottom: 10px;
+        }
+
+        pre {
+            background: #1a1a1a;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            font-size: 0.9em;
+            margin: 0 0 20px 0;
+        }
+
+        /* Viewport simulation */
+        .viewport-sim-mobile {
+            max-width: 320px;
+            border: 2px dashed #4caf50;
+            padding: 5px;
+        }
+
+        .viewport-sim-tablet {
+            max-width: 768px;
+            border: 2px dashed #2196f3;
+            padding: 5px;
+        }
+
+        .viewport-sim-desktop {
+            max-width: 1200px;
+            border: 2px dashed #ff9800;
+            padding: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎨 Mermaid Integration Test Suite</h1>
+    <p>Tests: Dark Theme, Responsive, All Diagram Types</p>
+
+    <!-- Test 1: Flowchart -->
+    <div class="test-section">
+        <div class="test-title">TEST 1: Flowchart (TD)</div>
+        <div class="test-note">Tests: flowchart TD, dark theme, SVG rendering</div>
+        <div class="mermaid">
+flowchart TD
+    A[User] --> B[Gateway]
+    B --> C[Agent]
+    C --> D[LLM]
+    D --> E{Response}
+    E -->|Success| F[Display]
+    E -->|Error| G[Fallback]
+        </div>
+    </div>
+
+    <!-- Test 2: Sequence Diagram -->
+    <div class="test-section">
+        <div class="test-title">TEST 2: Sequence Diagram</div>
+        <div class="test-note">Tests: sequenceDiagram, participants, messages, loops</div>
+        <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Gateway
+    participant Agent
+    participant LLM
+
+    User->>Gateway: Send message
+    Gateway->>Agent: Route message
+    loop Inference
+        Agent->>LLM: Send prompt
+        LLM->>Agent: Return response
+    end
+    Agent->>User: Display response
+        </div>
+    </div>
+
+    <!-- Test 3: Gantt Chart -->
+    <div class="test-section">
+        <div class="test-title">TEST 3: Gantt Chart</div>
+        <div class="test-note">Tests: gantt, timeline, sections, durations</div>
+        <div class="mermaid">
+gantt
+    title Mermaid Integration Timeline
+    dateFormat  YYYY-MM-DD
+    section Phase 1
+    Analysis         :a1, 2024-04-01, 2d
+    Dependency Setup :a2, after a1, 1d
+    section Phase 2
+    Component Dev    :a3, after a2, 2d
+    Integration      :a4, after a3, 2d
+    section Phase 3
+    Testing          :a5, after a4, 1d
+    Documentation    :a6, after a5, 1d
+        </div>
+    </div>
+
+    <!-- Test 4: State Diagram -->
+    <div class="test-section">
+        <div class="test-title">TEST 4: State Diagram</div>
+        <div class="test-note">Tests: stateDiagram, states, transitions</div>
+        <div class="mermaid">
+stateDiagram-v2
+    [*] --> Ready
+    Ready --> Processing
+    Processing --> Success
+    Processing --> Error
+    Success --> [*]
+    Error --> [*]
+        </div>
+    </div>
+
+    <!-- Test 5: ER Diagram -->
+    <div class="test-section">
+        <div class="test-title">TEST 5: Entity-Relationship Diagram</div>
+        <div class="test-note">Tests: erDiagram, entities, relationships</div>
+        <div class="mermaid">
+erDiagram
+    USER ||--o{ ORDER : places
+    USER {
+        string name
+        string email
+        int id PK
+    }
+    ORDER ||--|{ ITEM : contains
+    ORDER {
+        int id PK
+        date created_at
+    }
+    ITEM {
+        string name
+        float price
+        int id PK
+    }
+        </div>
+    </div>
+
+    <!-- Test 6: Mindmap -->
+    <div class="test-section">
+        <div class="test-title">TEST 6: Mindmap</div>
+        <div class="test-note">Tests: mindmap, hierarchical structure</div>
+        <div class="mermaid">
+mindmap
+  root((Mermaid))
+    Diagram Types
+      Flowcharts
+      Sequence
+      Gantt
+    Features
+      Dark Theme
+      Responsive
+      Accessibility
+    Performance
+      <100ms render
+      Debounced
+    Integration
+      React Component
+      MutationObserver
+    </div>
+    </div>
+
+    <!-- Test 7: Pie Chart -->
+    <div class="test-section">
+        <div class="test-title">TEST 7: Pie Chart</div>
+        <div class="test-note">Tests: pie, data visualization, colors</div>
+        <div class="mermaid">
+pie title Phase Completion
+    "Phase 0: Prep" : 12.5
+    "Phase 1: File Analysis" : 12.5
+    "Phase 2: Dependencies" : 12.5
+    "Phase 3: Component" : 12.5
+    "Phase 4: Markdown" : 12.5
+    "Phase 5: CSS" : 12.5
+    "Phase 6: Tests" : 12.5
+    "Phase 8: Docs" : 12.5
+        </div>
+    </div>
+
+    <!-- Test 8: Journey Map -->
+    <div class="test-section">
+        <div class="test-title">TEST 8: Journey Map</div>
+        <div class="test-note">Tests: journey, user journey, sections</div>
+        <div class="mermaid">
+journey
+    title User Journey: Mermaid Integration
+    section Phase 1
+        Understand task  : 5: User
+    section Phase 2-4
+        Components & Integration: 4: User
+    section Phase 5
+        Styling & Testing: 4: User
+    section Phase 8
+        Documentation: 5: User
+        </div>
+    </div>
+
+    <!-- Test 9: Git Graph -->
+    <div class="test-section">
+        <div class="test-title">TEST 9: Git Graph</div>
+        <div class="test-note">Tests: gitGraph, commits, branches</div>
+        <div class="mermaid">
+gitGraph
+    commit
+    commit
+    branch develop
+    checkout develop
+    commit
+    commit
+    checkout main
+    merge develop
+    commit
+    commit
+        </div>
+    </div>
+
+    <!-- Test 10: Responsive Simulation -->
+    <div class="test-section">
+        <div class="test-title">TEST 10: Responsive Design</div>
+        <div class="test-note">Testing: Mobile (320px), Tablet (768px), Desktop (1200px) viewports</div>
+
+        <h3>Mobile Viewport (320px)</h3>
+        <div class="viewport-sim-mobile">
+            <div class="mermaid">
+flowchart LR
+    A-->B
+    B-->C
+            </div>
+        </div>
+
+        <h3>Tablet Viewport (768px)</h3>
+        <div class="viewport-sim-tablet">
+            <div class="mermaid">
+flowchart TD
+    A-->B
+    B-->C
+    C-->D
+    D-->E
+            </div>
+        </div>
+
+        <h3>Desktop Viewport (1200px)</h3>
+        <div class="viewport-sim-desktop">
+            <div class="mermaid">
+flowchart LR
+    A-->B
+    B-->C
+    C-->D
+    D-->E
+    E-->F
+            </div>
+        </div>
+    </div>
+
+    <!-- Test 11: Error Handling -->
+    <div class="test-section" style="border-color: #ff4444;">
+        <div class="test-title" style="color: #ff4444;">TEST 11: Error Handling</div>
+        <div class="test-note">Testing: Invalid mermaid syntax should show fallback</div>
+        <div class="mermaid">
+flowchart INVALID SYNTAX HERE THIS SHOULD FAIL RENDERING
+        </div>
+    </div>
+
+    <h2>✅ Test Summary</h2>
+    <div id="test-results">
+        <p>Check browser console for errors.</p>
+        <p>Expected: 0 console errors, all diagrams render, dark theme matches.</p>
+    </div>
+
+    <script src="/node_modules/mermaid/dist/mermaid.min.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            mermaid.initialize({
+                startOnLoad: true,
+                theme: 'dark',
+                securityLevel: 'loose'
+            });
+
+            console.log('Mermaid initialized. Rendering all diagrams...');
+
+            setTimeout(() => {
+                const mermaidDivs = document.querySelectorAll('.mermaid');
+                console.log(`Found ${mermaidDivs.length} mermaid divs.`);
+
+                let renderedCount = 0;
+                mermaidDivs.forEach((div, index) => {
+                    if (div.querySelector('svg')) {
+                        renderedCount++;
+                    } else {
+                        console.error(`Mermaid diagram ${index} failed to render`);
+                    }
+                });
+
+                console.log(`✅ Rendered: ${renderedCount}/${mermaidDivs.length} diagrams`);
+
+                const resultsDiv = document.getElementById('test-results');
+                resultsDiv.innerHTML = `
+                    <p><strong>✅ Mermaid Diagrams Rendered: ${renderedCount}/${mermaidDivs.length}</strong></p>
+                    <p>Check console for detailed results.</p>
+                `;
+            }, 3000);
+        });
+    </script>
+</body>
+</html>

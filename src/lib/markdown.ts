@@ -325,8 +325,13 @@ markdownParser.use({
         };
       },
       renderer(text) {
+        const trimmedText = text.trim();
+        // Skip empty or whitespace-only mermaid blocks
+        if (!trimmedText) {
+          return `<pre><code class="language-mermaid">${escapeHtml(text)}</code></pre>\n`;
+        }
         const id = `mermaid-${Math.random().toString(36).substring(7)}`;
-        return `<div class="mermaid" data-mermaid-id="${id}">${text}</div>\n`;
+        return `<div class="mermaid" data-mermaid-id="${id}">${escapeHtml(text)}</div>\n`;
       },
     },
   ],
