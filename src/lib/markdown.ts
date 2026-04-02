@@ -95,8 +95,6 @@ const MATH_ALLOWED_ATTRS = [
   "xmlns",
 ];
 
-// KaTeX renders radical symbols (\sqrt), extensible arrows, and other
-// decorations as inline SVGs. Without these tags/attrs DOMPurify strips them.
 const SVG_ALLOWED_TAGS = ["svg", "path", "line", "rect", "circle", "g", "use", "defs", "clipPath"];
 
 const SVG_ALLOWED_ATTRS = [
@@ -140,8 +138,30 @@ renderer.link = (href, title, text) => {
   const safeTitle = title ? ` title="${escapeHtml(title)}"` : "";
   return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer"${safeTitle}>${text}</a>`;
 };
-renderer.code = (code, infostring, escaped) => {
-  const lang = (infostring || "").trim().split(/\s+/)[0] ?? "";
+renderer.code = (code: string, infostring: string, escaped: boolean) => {
+  const lang = (infostring || "").trim().split(/\\s+/)[0] ?? "";
+  // Handle mermaid blocks specially
+  if (lang.toLowerCase() === "mermaid") {
+    // ⚡ STOP AT FIRST closing fence, don't be greedy
+    let trimmedCode = code.trim();
+    const closeFenceIdx = trimmedCode.indexOf('```');
+    if (closeFenceIdx === -1) {
+      const tildeIdx = trimmedCode.indexOf('~~~');
+      if (tildeIdx >= 0) {
+        trimmedCode = trimmedCode.substring(0, tildeIdx).trim();
+      }
+    } else {
+      trimmedCode = trimmedCode.substring(0, closeFenceIdx).trim();
+    }
+    
+    if (!trimmedCode) {
+      return `<pre><code class="language-mermaid">${escapeHtml(code)}</code></pre>\n`;
+    }
+    const id = `mermaid-${Math.random().toString(36).substring(7)}`;
+    // Store mermaid code in data attribute to preserve newlines
+    const escapedCode = escapeHtml(trimmedCode).replace(/\n/g, '&#10;').replace(/\r/g, '').replace(/\u2028/g, '&#8232;');
+    return `<div class="mermaid" data-mermaid-id="${id}" data-mermaid-code="${escapedCode}">${trimmedCode}</div>\n`;
+  }
   const language = lang ? escapeHtml(lang) : "text";
   const body = escaped ? code : escapeHtml(code);
   return `<div class="md-code"><div class="md-code-head"><span>${language}</span><button type="button" class="md-code-copy" title="Copy code">Copy</button></div><pre><code class="language-${language}">${body}</code></pre></div>`;
@@ -163,180 +183,6 @@ markdownParser.use(
   }),
 );
 
-markdownParser.use({
-  extensions: [
-    {
-      level: "block",
-      name: "mathFence",
-      start(src: string) {
-        const index = src.search(/ {0,3}(?:`{3,}|~{3,})\s*(?:katex|latex|math|tex)\b/i);
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(
-          /^ {0,3}(`{3,}|~{3,})\s*(?:katex|latex|math|tex)[^\n]*\n([\s\S]*?)\n {0,3}\1[ \t]*(?:\n|$)/i,
-        );
-        if (!match) {
-          return;
-        }
-        return {
-          displayMode: true,
-          raw: match[0],
-          text: match[2],
-          type: "mathFence",
-        };
-      },
-      renderer(token: MathToken) {
-        return `${renderMath(token.text, true)}\n`;
-      },
-    },
-    {
-      level: "block",
-      name: "mathBracketBlock",
-      start(src: string) {
-        const index = src.indexOf("\\[");
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(/^ {0,3}\\\[\s*\n?([\s\S]+?)\n?\s*\\\](?:\n|$)/);
-        if (!match) {
-          return;
-        }
-        return {
-          displayMode: true,
-          raw: match[0],
-          text: match[1],
-          type: "mathBracketBlock",
-        };
-      },
-      renderer(token: MathToken) {
-        return `${renderMath(token.text, true)}\n`;
-      },
-    },
-    {
-      level: "block",
-      name: "mathEnvironmentBlock",
-      start(src: string) {
-        const index = src.indexOf("\\begin{");
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(/^ {0,3}(\\begin\{([A-Za-z*]+)\}[\s\S]+?\\end\{\2\})(?:\n|$)/);
-        if (!match) {
-          return;
-        }
-        if (!SUPPORTED_MATH_ENVIRONMENTS.has(match[2])) {
-          return;
-        }
-        return {
-          displayMode: true,
-          raw: match[0],
-          text: match[1],
-          type: "mathEnvironmentBlock",
-        };
-      },
-      renderer(token: MathToken) {
-        return `${renderMath(token.text, true)}\n`;
-      },
-    },
-    {
-      level: "block",
-      name: "mathTagBlock",
-      start(src: string) {
-        const index = src.toLowerCase().indexOf("[math]");
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(/^\[math\]\s*\n?([\s\S]+?)\n?\[\/math\](?:\n|$)/i);
-        if (!match) {
-          return;
-        }
-        return {
-          displayMode: true,
-          raw: match[0],
-          text: match[1],
-          type: "mathTagBlock",
-        };
-      },
-      renderer(token: MathToken) {
-        return `${renderMath(token.text, true)}\n`;
-      },
-    },
-    {
-      level: "inline",
-      name: "mathParenInline",
-      start(src: string) {
-        const index = src.indexOf("\\(");
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(/^\\\(((?:\\.|[^\\\n])+?)\\\)/);
-        if (!match) {
-          return;
-        }
-        return {
-          displayMode: false,
-          raw: match[0],
-          text: match[1],
-          type: "mathParenInline",
-        };
-      },
-      renderer(token: MathToken) {
-        return renderMath(token.text, false);
-      },
-    },
-    {
-      level: "inline",
-      name: "mathTagInline",
-      start(src: string) {
-        const index = src.toLowerCase().indexOf("[math]");
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src: string) {
-        const match = src.match(/^\[math\]((?:\\.|[^\n])+?)\[\/math\]/i);
-        if (!match) {
-          return;
-        }
-        return {
-          displayMode: false,
-          raw: match[0],
-          text: match[1],
-          type: "mathTagInline",
-        };
-      },
-      renderer(token: MathToken) {
-        return renderMath(token.text, false);
-      },
-    },
-    {
-      level: "block",
-      name: "mermaid",
-      start(src) {
-        const index = src.search(/ {0,3}(?:`{3,}|~{3,})\s*(?:mermaid)\b/i);
-        return index >= 0 ? index : undefined;
-      },
-      tokenizer(src) {
-        const match = src.match(/^ {0,3}(`{3,}|~{3,})\s*(?:mermaid)[^\n]*\n([\s\S]*?)\n {0,3}\1[ \t]*(?:\n|$)/i);
-        if (!match) return undefined;
-        return {
-          raw: match[0],
-          text: match[2],
-          type: "mermaid",
-        };
-      },
-      renderer(text) {
-        const trimmedText = text.trim();
-        // Skip empty or whitespace-only mermaid blocks
-        if (!trimmedText) {
-          return `<pre><code class="language-mermaid">${escapeHtml(text)}</code></pre>\n`;
-        }
-        const id = `mermaid-${Math.random().toString(36).substring(7)}`;
-        return `<div class="mermaid" data-mermaid-id="${id}">${escapeHtml(text)}</div>\n`;
-      },
-    },
-  ],
-});
-
 const MARKDOWN_CACHE_LIMIT = 240;
 const markdownHtmlCache = new Map<string, string>();
 
@@ -354,16 +200,25 @@ function cacheMarkdownHtml(source: string, html: string): string {
   return html;
 }
 
-export function renderMarkdown(text: string): string {
-  const source = text ?? "";
+export function renderMarkdown(text: unknown): string {
+  const source = typeof text === "string" ? text : "";
   if (!source) {
     return "";
   }
-  const cached = markdownHtmlCache.get(source);
+  
+  // ⚡ Normalize all line separators BEFORE markdown parsing
+  const normalizedSource = source
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .replace(/[\u2028\u2029\u0085]/g, '\n');
+  
+  const cached = markdownHtmlCache.get(normalizedSource);
   if (typeof cached === "string") {
-    return cacheMarkdownHtml(source, cached);
+    return cacheMarkdownHtml(normalizedSource, cached);
   }
-  const html = markdownParser.parse(source) as string;
+  
+  const html = markdownParser.parse(normalizedSource) as string;
+  
   const sanitized = DOMPurify.sanitize(html, {
     ALLOWED_ATTR: [
       "href",
@@ -376,6 +231,9 @@ export function renderMarkdown(text: string): string {
       "type",
       "checked",
       "disabled",
+      "data-mermaid-id",
+      "data-mermaid-code",
+      "style", // Allow inline styles for error messages
       ...MATH_ALLOWED_ATTRS,
       ...SVG_ALLOWED_ATTRS,
     ],
@@ -409,9 +267,11 @@ export function renderMarkdown(text: string): string {
       "span",
       "input",
       "button",
+      "details", // For collapsible error messages
+      "summary", // For collapsible error messages
       ...MATH_ALLOWED_TAGS,
       ...SVG_ALLOWED_TAGS,
     ],
   });
-  return cacheMarkdownHtml(source, sanitized);
+  return cacheMarkdownHtml(normalizedSource, sanitized);
 }
