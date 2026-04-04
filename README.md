@@ -3,6 +3,12 @@
   <p align="center">A modern, ChatGPT-style web & desktop client for <a href="https://github.com/openclaw/openclaw">OpenClaw Gateway</a>.</p>
 </p>
 
+> **This project is no longer maintained.**
+>
+> On April 4, 2026, Anthropic officially prohibited the use of their subscription quota through OpenClaw. As a result, this project has been archived and will no longer receive updates.
+>
+> The code remains available for reference purposes.
+
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
