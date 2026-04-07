@@ -1,179 +1,144 @@
 <p align="center">
-  <h1 align="center">ClawUI</h1>
-  <p align="center">A modern, ChatGPT-style web & desktop client for <a href="https://github.com/openclaw/openclaw">OpenClaw Gateway</a>.</p>
+  <h1 align="center">ClawFace</h1>
+  <p align="center">
+    A desktop-native OpenClaw client built to make sessions, tools, media, and future OpenClaw-native capabilities feel like first-class parts of the experience.
+  </p>
 </p>
 
-> **This project is no longer maintained.**
->
-> On April 4, 2026, Anthropic officially prohibited the use of their subscription quota through OpenClaw. As a result, this project has been archived and will no longer receive updates.
->
-> The code remains available for reference purposes.
+ClawFace is a fork-forward continuation of an abandoned OpenClaw desktop/web client experiment.
+It is now being repositioned as a **desktop-first frontend product for OpenClaw**, not a generic chatbot shell and not a replacement for OpenClaw’s backend management/configuration surfaces.
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> •
-  <a href="#features">Features</a> •
-  <a href="#file-manager">File Manager</a> •
-  <a href="#demo">Demo</a> •
-  <a href="#desktop-app">Desktop App</a> •
-  <a href="#configuration">Configuration</a> •
-  <a href="LICENSE">License</a>
-</p>
+## Project direction
 
-![ClawUI Preview](./UIpreview.png)
+ClawFace exists to be the best way to *use* OpenClaw day to day on a desktop machine.
 
-## Why ClawUI?
+The product direction is:
+- **OpenClaw-native**, not provider-native
+- **desktop-first**, not web-first team collaboration
+- **conversational at the center**, but with room for tools, sessions, tasks, media, and devices as first-class experiences
+- **frontend-focused**, while OpenClaw itself remains the backend management and capability plane
 
-OpenClaw's built-in webchat is functional but minimal. ClawUI gives you a full-featured chat interface — session management, rich rendering, tool call inspection, keyboard shortcuts, file management, and deep UI customization — all connecting directly to your Gateway via WebSocket. No extra backend needed.
+### What ClawFace is not
 
-## Quick Start
+ClawFace is **not** intended to become:
+- a generic multi-provider chatbot shell
+- a team collaboration workspace
+- a prettier copy of OpenClaw’s backend config/admin UI
+- just another settings panel with a chat window attached
 
-> **Prerequisites:** Node.js ≥ 22, npm ≥ 10, a running [OpenClaw Gateway](https://docs.openclaw.ai/gateway)
+## Current product thesis
 
-```bash
-git clone https://github.com/Kt-L/clawUI.git
-cd clawUI
-npm install
-npm run dev
-```
+> ClawFace should make OpenClaw feel like a real personal AI workstation, not just a backend with a chat window.
 
-Open the URL printed by Vite (default `http://localhost:5178`), go to **Settings**, and enter your Gateway URL + token/password. That's it.
+## Why this project exists
 
-## Features
+OpenClaw already has powerful capabilities across:
+- sessions
+- tools
+- media analysis
+- browser/canvas flows
+- nodes/devices
+- background work and orchestration
+- local/self-hosted workflows
 
-**Chat**
-- Streaming AI responses with live thinking animation
-- Markdown, syntax-highlighted code blocks, LaTeX math (KaTeX), and tables
-- Tool call timeline — collapsed by default, expandable for full args & output; running tools show a pulsing status dot
-- File & image attachments with visual preview cards, auto-compression, and size estimation
-- Smart text file embedding — text-based attachments (source code, config, markdown, etc.) are decoded and sent inline as `<file>` tags for better model context; binary files are labeled accordingly
-- OpenClaw envelope stripping — user messages are automatically cleaned of gateway-injected metadata (system events, conversation info / sender metadata, timestamps) for a cleaner chat display
-- Reply-done sound notifications (built-in tones or custom audio)
-- Graceful WebSocket error handling — invalid gateway URLs no longer crash the connection loop
+But those capabilities are currently spread across multiple surfaces.
+ClawFace is intended to unify the everyday *desktop experience* of OpenClaw without trying to replace every backend/admin surface.
 
-**Sessions**
-- Create, search, switch, and delete sessions from the sidebar
-- Session titles and previews are sanitized (envelope metadata stripped) for cleaner display
-- History pagination with incremental loading
-- Multi-agent support — create sessions bound to specific agents
-- Delete spinner animation with visual feedback
+## High-level goals
 
-**File Manager**
-- Built-in file browser accessible from the sidebar — switch between chat and files with a 3D flip animation
-- Browse, preview, edit, upload, download, create folders, and delete files
-- Configurable root directories via `~/.openclaw/clawui-fs.json`
-- Preview support for Markdown (rendered), text/code files, images, and PDFs
-- In-browser text file editing with Cmd/Ctrl+S save and unsaved-change indicator
-- Drag-and-drop file upload with visual drop overlay
-- Sort by name, size, or date; toggle hidden files
-- Breadcrumb navigation with root tabs
-- Security: all paths are validated and scoped to configured roots (symlink-aware)
-- Works in both web (Vite dev server plugin) and desktop (custom `claw-fs://` protocol)
-- Remote file server support — configure a File Server URL in Settings for cross-device access
+Near-term priorities for ClawFace are:
+- strong desktop chat UX
+- stable session navigation and switching
+- excellent drag-and-drop / paste workflows for images and files
+- visible tool activity and better legibility around actionful work
+- enough architectural cleanup to support future OpenClaw-native expansion
 
-**Frost & Glow Visual Theme**
-- Glassmorphism-inspired design with warm-yellow accent palette and refined design tokens
-- 3D perspective tilt on session and file cards — hover to see the entire card (border, background, shadow) respond to cursor position with specular glow highlights
-- Directional coin-flip animation on session card click — the card flips from the side you clicked
-- 3D sidebar flip transition between chat and file views
-- Staggered "drawer pop" fly-in animations when switching sessions
-- Composer launch impulse and chat thread physics on send
-- Smooth sidebar slide-in/collapse, menu entrance, and modal backdrop transitions
-- Custom text selection styling with accent-tinted highlight
-- Connection status dots with subtle glow rings
-- Copy button press animation with success state
+Longer-term opportunities include:
+- approvals
+- background tasks and subagents
+- node/device surfaces
+- richer browser/canvas/computer-use UX
+- stronger artifact/media handling
 
-**Slash Commands**
-- `/status` `/models` `/model` `/think` `/compact` `/abort` `/new` `/reset` and more
-- Autocomplete popup with keyboard navigation (↑↓ + Enter/Tab)
+## Current status
 
-**Shortcuts**
-- Configurable app action shortcuts — Toggle Sidebar and New Session with full modifier customization (Cmd/Ctrl/Alt/Shift + key), enable/disable per action
-- Up to 5 custom model shortcuts (model + thinking level combo)
-- Up to 5 custom agent-session shortcuts
+This codebase is **worth continuing**, but it is not treated as finished or production-ready architecture.
 
-**UI Customization**
-- Font family, size, line height, content width
-- Color schemes and themes
-- Animation toggle — enable or disable all motion effects (including sidebar flip and card tilt)
-- Settings schemes — save & switch between presets
-- All changes apply instantly, persisted in localStorage
+The current strategy is:
+- salvage the valuable protocol/UI groundwork
+- refactor the overloaded architecture
+- expand deliberately in OpenClaw-native directions
 
-![Tool Calls & Sidebar](./UIpreview2.png)
+In plain English:
+- do **not** rewrite from scratch immediately
+- do **not** keep piling features into giant central files
+- proceed through staged refactoring and vertical product slices
 
-## File Manager
+## Working in this repo
 
-The file manager provides a full file browser alongside the chat interface. Click the **Files** button in the sidebar to switch views.
+If you are a coding agent or are onboarding quickly, start with:
 
-**Setup:** By default, ClawUI serves files from `~/.openclaw/workspace`. To customize accessible directories, create `~/.openclaw/clawui-fs.json`:
+- [`AGENTS.md`](./AGENTS.md) — bootstrap guide for repo orientation, doc reading order, architecture hotspots, and working conventions
 
-```json
-{
-  "roots": [
-    { "label": "Workspace", "path": "/Users/you/.openclaw/workspace" },
-    { "label": "Projects", "path": "/Users/you/projects" }
-  ]
-}
-```
+## Planning docs
 
-**Desktop:** The file manager works natively via the `claw-fs://` protocol — no extra server needed.
+The repo now includes project-planning docs to guide the modernization effort:
 
-**Remote access:** To browse files from a remote machine running the Vite dev server, set the **File Server URL** in Settings (e.g. `http://192.168.1.100:5178`).
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) — architecture inventory and refactor plan
+- [`PRODUCT-BRIEF.md`](./PRODUCT-BRIEF.md) — product vision, principles, and differentiators
+- [`MILESTONE-1.md`](./MILESTONE-1.md) — first serious milestone definition
+- [`IMPLEMENTATION-ROADMAP.md`](./IMPLEMENTATION-ROADMAP.md) — phased roadmap with vertical slices
 
-## Demo
+If you are working on the app, start with those docs before making major architectural changes.
 
-https://github.com/user-attachments/assets/ef7d17be-8a14-40d3-896e-f26839052041
+## Milestone 1 summary
 
-> *Short walkthrough of the UI*
+Milestone 1 is focused on shipping the first version of ClawFace that is genuinely worth using every day as an OpenClaw desktop frontend.
 
-## Desktop App
+Milestone 1 focuses on:
+- connection reliability
+- session shell stability
+- thread rendering and streaming cleanup
+- composer cleanup
+- drag/drop and paste workflows for media/files
+- attachment previews and rendering polish
+- basic tool activity visibility
+- initial architecture cleanup around chat, state, and platform/media boundaries
 
-ClawUI supports Electron packaging for a native desktop experience with local image resolution and file system access.
+## Technology stack
 
-```bash
-npm run build
-npm run desktop:pack          # unpacked app for current OS
-npm run desktop:dist:mac      # unsigned macOS .dmg + .zip
-```
+Current stack includes:
+- React
+- TypeScript
+- Vite
+- Electron
 
-See [DESKTOP.md](DESKTOP.md) for details on macOS Gatekeeper and first-launch instructions.
+This remains a reasonable baseline for the product.
 
-### Download from Releases
+## Development status and expectations
 
-Pre-built **unsigned** macOS desktop build is available on the [Releases](https://github.com/Kt-L/clawUI/releases) page.
+This repo is under active repositioning and architectural cleanup.
 
-> ⚠️ **This build is unsigned.** macOS Gatekeeper will block the app on first launch. To open it:
-> 1. Right-click the app and choose **Open**.
-> 2. Confirm the security prompt once.
->
-> After the first launch, the app will open normally.
+Expect:
+- moving boundaries
+- refactors before major new features
+- some legacy complexity from the abandoned predecessor
+- planning docs that may be more accurate than older implementation assumptions
 
-## Configuration
+## Practical development guidance
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `5178` | Vite dev server port |
-| `CLAWUI_IMAGE_PROXY_PORT` | `3000` | Local image proxy port (desktop) |
-| `OPENCLAW_WORKSPACE_DIR` | auto | Override workspace path for desktop runtime |
+When working in this repo:
+- do not treat current giant components as the final architecture
+- prefer extracting clear boundaries over adding more logic to overloaded files
+- align product changes with the roadmap’s vertical slices
+- keep OpenClaw-native capability exposure central to the product direction
 
-Gateway connection settings (URL, token, password) and File Server URL are configured in the UI under **Settings**.
+## Original project note
 
-## Project Structure
+This repo began as a more generic “modern chat client for OpenClaw Gateway” effort under a different project identity.
+That framing is no longer sufficient for where the project is headed.
 
-```
-src/               React app, components, and client logic
-src/components/    Chat view, session sidebar, file manager, settings modal
-src/lib/           Gateway client, markdown renderer, UI settings, utilities
-src/hooks/         Custom React hooks (e.g. useCardTilt for 3D tilt effect)
-electron/          Desktop main/preload bridge, local image & file system protocols
-scripts/           Runtime and environment checks
-vite-fs-plugin.ts  Vite dev server plugin for file system REST API
-```
-
-## Disclaimer & Status
-
-⚠️ This project is an AI-assisted rapid development experiment.
-
-Because it was built quickly with the help of AI, the codebase may contain bugs, edge cases, or unoptimized architecture. It is published strictly for learning, inspiration, and reference purposes.
+The new direction is intentional: ClawFace should become a true desktop frontend for OpenClaw’s richer ecosystem of sessions, tools, media, and future operator surfaces.
 
 ## License
 
